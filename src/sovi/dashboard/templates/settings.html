@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block title %}SOVI — Settings{% endblock %}
+{% block content %}
+<h1>Settings</h1>
+
+<h2>API Keys</h2>
+<div class="card">
+  {% for key, info in keys.items() %}
+  <div class="key-status">
+    <div class="key-dot {% if info.configured %}configured{% else %}missing{% endif %}"></div>
+    <span>{{ info.label }}</span>
+    {% if info.configured %}
+    <span class="badge badge-green">configured</span>
+    {% else %}
+    <span class="badge badge-red">missing</span>
+    {% endif %}
+  </div>
+  {% endfor %}
+</div>
+
+<h2 class="mt-2">Connection Tests</h2>
+<div class="card">
+  <div class="mb-2">
+    <button class="btn" hx-get="/api/settings/test/db" hx-target="#test-db">Test Database</button>
+    <span id="test-db" class="text-sm"></span>
+  </div>
+  <div class="mb-2">
+    <button class="btn" hx-get="/api/settings/test/captcha" hx-target="#test-captcha">Test CAPTCHA</button>
+    <span id="test-captcha" class="text-sm"></span>
+  </div>
+  <div class="mb-2">
+    <button class="btn" hx-get="/api/settings/test/sms" hx-target="#test-sms">Test SMS</button>
+    <span id="test-sms" class="text-sm"></span>
+  </div>
+</div>
+{% endblock %}

@@ -1,0 +1,4 @@
+# git-crypt: encrypt secrets at rest
+.env filter=git-crypt diff=git-crypt
+.env.* filter=git-crypt diff=git-crypt
+.env.example !filter !diff

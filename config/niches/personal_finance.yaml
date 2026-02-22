@@ -1,0 +1,71 @@
+name: Personal Finance
+slug: personal_finance
+tier: 1
+active: true
+
+voice_profile:
+  tone: authoritative_friendly
+  vocabulary: intermediate
+  persona: "Financial educator who breaks down complex topics"
+  elevenlabs_voice_id: null  # Set after voice selection
+
+content_pillars:
+  - budgeting_basics
+  - investing_101
+  - side_hustles
+  - debt_payoff
+  - credit_score
+  - tax_tips
+  - frugal_living
+
+formats:
+  primary: [faceless_narration, listicle]
+  secondary: [carousel, reddit_story]
+
+platforms:
+  tiktok:
+    hashtags: ["#finance", "#moneytok", "#investing", "#personalfinance"]
+    post_frequency: 5_per_week
+    duration_target_s: 45
+  instagram:
+    hashtags: ["#financetips", "#moneysaving", "#investing101"]
+    post_frequency: 4_per_week
+    duration_target_s: 30
+  youtube:
+    hashtags: ["#Shorts", "#Finance", "#MoneyTips"]
+    post_frequency: 3_per_week
+    duration_target_s: 50
+  reddit:
+    subreddits:
+      - name: personalfinance
+        min_karma: 100
+        min_age_days: 30
+        post_frequency: 2_per_week
+        content_style: educational
+      - name: investing
+        min_karma: 200
+        min_age_days: 60
+        post_frequency: 1_per_week
+        content_style: analytical
+      - name: povertyfinance
+        min_karma: 50
+        min_age_days: 14
+        post_frequency: 1_per_week
+        content_style: empathetic
+  twitter:
+    hashtags: ["#FinTwit", "#PersonalFinance"]
+    post_frequency: 7_per_week
+
+hook_preferences:
+  categories: [numbers_data, bold_claim, problem_pain, list_structure]
+  emotional_tone: [curiosity, urgency]
+
+competitors:
+  tiktok: []  # Fill with account handles to track
+  instagram: []
+  youtube: []
+
+monetization:
+  affiliate_programs: [robinhood, acorns, wealthfront, ally]
+  product_types: [courses, ebooks, templates]
+  cpm_estimate: 15.0

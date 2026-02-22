@@ -1,0 +1,65 @@
+name: Tech / AI Tools
+slug: tech_ai_tools
+tier: 1
+active: true
+
+voice_profile:
+  tone: enthusiastic_expert
+  vocabulary: technical_accessible
+  persona: "Tech insider who finds the best tools first"
+  elevenlabs_voice_id: null
+
+content_pillars:
+  - ai_tool_reviews
+  - productivity_apps
+  - hidden_features
+  - tech_tutorials
+  - automation_tips
+  - future_tech
+
+formats:
+  primary: [faceless_narration, listicle]
+  secondary: [carousel, ai_avatar]
+
+platforms:
+  tiktok:
+    hashtags: ["#techtok", "#ai", "#productivity", "#tools"]
+    post_frequency: 5_per_week
+    duration_target_s: 30
+  instagram:
+    hashtags: ["#techtools", "#aitools", "#productivity"]
+    post_frequency: 4_per_week
+    duration_target_s: 30
+  youtube:
+    hashtags: ["#Shorts", "#AI", "#TechTips"]
+    post_frequency: 4_per_week
+    duration_target_s: 45
+  reddit:
+    subreddits:
+      - name: technology
+        min_karma: 200
+        min_age_days: 30
+        post_frequency: 1_per_week
+        content_style: informative
+      - name: artificial
+        min_karma: 100
+        min_age_days: 14
+        post_frequency: 2_per_week
+        content_style: analytical
+  twitter:
+    hashtags: ["#AI", "#Tech", "#Productivity"]
+    post_frequency: 10_per_week
+
+hook_preferences:
+  categories: [bold_claim, numbers_data, urgency_fomo, curiosity_gap]
+  emotional_tone: [excitement, urgency]
+
+competitors:
+  tiktok: []
+  instagram: []
+  youtube: []
+
+monetization:
+  affiliate_programs: [amazon_associates, appsumo, notion]
+  product_types: [courses, templates, tool_bundles]
+  cpm_estimate: 14.0

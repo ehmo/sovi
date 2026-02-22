@@ -1,0 +1,228 @@
+syntax = "proto3";
+
+package sovi.device;
+
+option swift_prefix = "SOVI";
+
+// === Device Management ===
+
+service DeviceService {
+  rpc ListDevices(Empty) returns (DeviceList);
+  rpc GetDeviceStatus(DeviceId) returns (DeviceStatus);
+  rpc StreamDeviceStatus(DeviceId) returns (stream DeviceStatus);
+  rpc RebootDevice(DeviceId) returns (Result);
+  rpc SetProxy(SetProxyRequest) returns (Result);
+}
+
+service AutomationService {
+  rpc StartSession(StartSessionRequest) returns (SessionInfo);
+  rpc StopSession(SessionId) returns (Result);
+  rpc ExecuteAction(ActionRequest) returns (ActionResult);
+  rpc ExecuteActionSequence(ActionSequenceRequest) returns (ActionSequenceResult);
+  rpc FindElement(FindElementRequest) returns (ElementResult);
+  rpc TakeScreenshot(SessionId) returns (ScreenshotResult);
+  rpc SwitchAccount(SwitchAccountRequest) returns (Result);
+}
+
+service WarmingService {
+  rpc StartWarmingSequence(WarmingRequest) returns (Result);
+  rpc PauseWarming(DeviceId) returns (Result);
+  rpc ResumeWarming(DeviceId) returns (Result);
+  rpc GetWarmingProgress(DeviceId) returns (stream WarmingProgress);
+  rpc StopWarming(DeviceId) returns (Result);
+}
+
+service HealthService {
+  rpc HealthCheck(Empty) returns (HealthStatus);
+  rpc GetMetrics(DeviceId) returns (DeviceMetrics);
+}
+
+// === Messages ===
+
+message Empty {}
+
+message DeviceId {
+  string udid = 1;
+}
+
+message SessionId {
+  string session_id = 1;
+}
+
+message DeviceInfo {
+  string udid = 1;
+  string model = 2;
+  string ios_version = 3;
+  string status = 4;  // available, busy, warming, recovering, failed, disconnected
+  string current_proxy = 5;
+  float battery_level = 6;
+  float storage_free_gb = 7;
+  string active_session_id = 8;
+}
+
+message DeviceList {
+  repeated DeviceInfo devices = 1;
+}
+
+message DeviceStatus {
+  DeviceInfo device = 1;
+  int64 uptime_seconds = 2;
+  string active_app = 3;
+  string active_account = 4;
+}
+
+message SetProxyRequest {
+  string udid = 1;
+  string proxy_host = 2;
+  int32 proxy_port = 3;
+  string proxy_username = 4;
+  string proxy_password = 5;
+  string geo_location = 6;
+}
+
+message StartSessionRequest {
+  string udid = 1;
+  string bundle_id = 2;  // e.g. com.zhiliaoapp.musically
+}
+
+message SessionInfo {
+  string session_id = 1;
+  string udid = 2;
+  string bundle_id = 3;
+}
+
+message ActionRequest {
+  string session_id = 1;
+  oneof action {
+    TapAction tap = 2;
+    TypeAction type = 3;
+    SwipeAction swipe = 4;
+    ScrollAction scroll = 5;
+    WaitAction wait = 6;
+    LaunchAppAction launch_app = 7;
+    PressButtonAction press_button = 8;
+  }
+}
+
+message TapAction {
+  oneof target {
+    string accessibility_id = 1;
+    Coordinates coordinates = 2;
+  }
+}
+
+message TypeAction {
+  string text = 1;
+  int32 char_delay_ms = 2;  // 50-150ms for human-like typing
+}
+
+message SwipeAction {
+  Coordinates start = 1;
+  Coordinates end = 2;
+  int32 duration_ms = 3;
+}
+
+message ScrollAction {
+  string direction = 1;  // up, down, left, right
+  float distance = 2;
+}
+
+message WaitAction {
+  int32 duration_ms = 1;
+}
+
+message LaunchAppAction {
+  string bundle_id = 1;
+}
+
+message PressButtonAction {
+  string button = 1;  // home, volumeUp, volumeDown
+}
+
+message Coordinates {
+  float x = 1;
+  float y = 2;
+}
+
+message ActionResult {
+  bool success = 1;
+  string error_message = 2;
+  bytes screenshot = 3;  // optional post-action screenshot
+}
+
+message ActionSequenceRequest {
+  string session_id = 1;
+  repeated ActionRequest actions = 2;
+}
+
+message ActionSequenceResult {
+  repeated ActionResult results = 1;
+  bool all_succeeded = 2;
+}
+
+message FindElementRequest {
+  string session_id = 1;
+  string strategy = 2;  // accessibility_id, predicate, class_chain, xpath
+  string value = 3;
+  int32 timeout_ms = 4;
+}
+
+message ElementResult {
+  bool found = 1;
+  string element_id = 2;
+  string text = 3;
+  Coordinates location = 4;
+  float width = 5;
+  float height = 6;
+}
+
+message ScreenshotResult {
+  bytes image_data = 1;
+  string format = 2;  // png
+}
+
+message SwitchAccountRequest {
+  string session_id = 1;
+  string platform = 2;
+  string target_username = 3;
+}
+
+message WarmingRequest {
+  string udid = 1;
+  string platform = 2;
+  string account_id = 3;
+  int32 phase = 4;  // 1, 2, or 3
+}
+
+message WarmingProgress {
+  string udid = 1;
+  string platform = 2;
+  int32 phase = 3;
+  int32 day_in_phase = 4;
+  int32 actions_completed = 5;
+  int32 actions_total = 6;
+  string current_action = 7;
+}
+
+message HealthStatus {
+  bool healthy = 1;
+  int32 devices_connected = 2;
+  int32 active_sessions = 3;
+  string version = 4;
+}
+
+message DeviceMetrics {
+  string udid = 1;
+  float battery_level = 2;
+  float storage_free_gb = 3;
+  bool wifi_connected = 4;
+  int64 session_uptime_seconds = 5;
+  int32 actions_total = 6;
+  int32 actions_failed = 7;
+  float action_success_rate = 8;
+}
+
+message Result {
+  bool success = 1;
+  string message = 2;
+}

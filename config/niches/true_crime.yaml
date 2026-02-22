@@ -1,0 +1,46 @@
+name: True Crime
+slug: true_crime
+tier: 2
+active: true
+
+voice_profile:
+  tone: suspenseful_narrative
+  vocabulary: intermediate
+  persona: "True crime narrator who builds tension and delivers chilling details"
+  elevenlabs_voice_id: null
+
+content_pillars:
+  - unsolved_mysteries
+  - serial_killers
+  - cold_cases
+  - forensic_science
+  - missing_persons
+  - wrongful_convictions
+  - heists_scams
+
+formats:
+  primary: [faceless_narration, reddit_story]
+  secondary: [listicle, carousel]
+
+platforms:
+  tiktok:
+    hashtags: ["#truecrime", "#crimetok", "#mystery", "#unsolved", "#coldcase"]
+    post_frequency: 5_per_week
+    duration_target_s: 60
+  instagram:
+    hashtags: ["#truecrimecommunity", "#truecrimejunkie", "#mysterycase"]
+    post_frequency: 4_per_week
+    duration_target_s: 45
+
+hook_preferences:
+  categories: [curiosity_gap, shock_tension, personal_story, numbers_data]
+  emotional_tone: [suspense, curiosity]
+
+competitors:
+  tiktok: []
+  instagram: []
+
+monetization:
+  affiliate_programs: [audible, curiositystream, nordvpn]
+  product_types: [merch, podcasts]
+  cpm_estimate: 12.0

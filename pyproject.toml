@@ -1,0 +1,103 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "sovi"
+version = "0.1.0"
+description = "Social Video Intelligence & Distribution Network"
+requires-python = ">=3.12"
+dependencies = [
+    # Orchestration
+    "temporalio>=1.9.0",
+
+    # Database
+    "psycopg[binary,pool]>=3.2",
+    "asyncpg>=0.30",
+
+    # AI / LLM
+    "anthropic>=0.42",
+    "fal-client>=0.5",
+
+    # Voice / Audio
+    "elevenlabs>=1.15",
+    "deepgram-sdk>=3.8",
+    "openai>=1.60",
+
+    # Reddit
+    "praw>=7.8",
+
+    # HTTP
+    "httpx>=0.28",
+
+    # Config / Validation
+    "pydantic>=2.10",
+    "pydantic-settings>=2.7",
+    "pyyaml>=6.0",
+
+    # Video / Image
+    "Pillow>=11.0",
+
+    # Scheduling / Tasks
+    "celery[redis]>=5.4",
+    "redis>=5.2",
+
+    # gRPC (Python client for Swift daemon)
+    "grpcio>=1.69",
+    "grpcio-tools>=1.69",
+    "protobuf>=5.29",
+
+    # Crypto
+    "cryptography>=44.0",
+    "pyotp>=2.9",
+
+    # Dashboard
+    "fastapi>=0.115",
+    "uvicorn>=0.34",
+    "jinja2>=3.1",
+    "python-multipart>=0.0.18",
+    "sse-starlette>=2.0",
+
+    # Auth / Verification
+    "imapclient>=3.0",
+
+    # Utilities
+    "python-dotenv>=1.0",
+    "structlog>=24.4",
+    "click>=8.1",
+    "rich>=13.9",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "pytest-cov>=6.0",
+    "ruff>=0.8",
+    "mypy>=1.13",
+]
+analytics = [
+    "plotly>=5.24",
+    "pandas>=2.2",
+]
+
+[project.scripts]
+sovi = "sovi.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/sovi"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP", "B", "SIM"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[tool.mypy]
+python_version = "3.12"
+strict = true

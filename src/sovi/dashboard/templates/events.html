@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% block title %}SOVI — Events{% endblock %}
+{% block content %}
+<h1>Events</h1>
+
+<div class="mb-2">
+  <button class="btn" onclick="document.getElementById('stream').style.display='block'">Connect SSE</button>
+</div>
+
+<div id="stream" style="display:none" hx-ext="sse" sse-connect="/api/logs/stream">
+  <div class="event-stream" sse-swap="message" hx-swap="afterbegin">
+  </div>
+</div>
+
+<h2>Event History</h2>
+<table>
+  <thead>
+    <tr>
+      <th>Time</th>
+      <th>Severity</th>
+      <th>Category</th>
+      <th>Type</th>
+      <th>Message</th>
+      <th>Resolved</th>
+      <th>Actions</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for e in events %}
+    <tr>
+      <td class="mono text-dim">{{ e.timestamp.strftime('%m/%d %H:%M:%S') if e.timestamp else '?' }}</td>
+      <td><span class="badge severity-{{ e.severity }}">{{ e.severity }}</span></td>
+      <td>{{ e.category }}</td>
+      <td>{{ e.event_type }}</td>
+      <td>{{ e.message[:60] }}</td>
+      <td>
+        {% if e.resolved %}
+          <span class="badge badge-green">yes</span>
+        {% else %}
+          <span class="badge badge-red">no</span>
+        {% endif %}
+      </td>
+      <td>
+        {% if not e.resolved %}
+        <button class="btn" hx-post="/api/events/{{ e.id }}/resolve" hx-swap="none" style="padding:0.25rem 0.5rem;font-size:0.75rem">Resolve</button>
+        {% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+    {% if not events %}
+    <tr><td colspan="7" class="text-dim">No events</td></tr>
+    {% endif %}
+  </tbody>
+</table>
+{% endblock %}

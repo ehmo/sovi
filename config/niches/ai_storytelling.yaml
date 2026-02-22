@@ -1,0 +1,65 @@
+name: AI Storytelling / Dark Stories
+slug: ai_storytelling
+tier: 1
+active: true
+
+voice_profile:
+  tone: dramatic_mysterious
+  vocabulary: accessible
+  persona: "Enigmatic storyteller who reveals hidden truths"
+  elevenlabs_voice_id: null
+
+content_pillars:
+  - urban_legends
+  - unsolved_mysteries
+  - creepy_history
+  - what_if_scenarios
+  - conspiracy_theories_debunked
+  - dark_psychology
+
+formats:
+  primary: [faceless_narration, reddit_story]
+  secondary: [listicle]
+
+platforms:
+  tiktok:
+    hashtags: ["#storytime", "#darkstory", "#mystery", "#creepy"]
+    post_frequency: 5_per_week
+    duration_target_s: 60
+  instagram:
+    hashtags: ["#scarystories", "#mystery", "#truestory"]
+    post_frequency: 4_per_week
+    duration_target_s: 45
+  youtube:
+    hashtags: ["#Shorts", "#ScaryStories", "#Mystery"]
+    post_frequency: 3_per_week
+    duration_target_s: 58
+  reddit:
+    subreddits:
+      - name: nosleep
+        min_karma: 200
+        min_age_days: 30
+        post_frequency: 1_per_week
+        content_style: narrative
+      - name: creepy
+        min_karma: 100
+        min_age_days: 14
+        post_frequency: 1_per_week
+        content_style: atmospheric
+  twitter:
+    hashtags: ["#HorrorStories", "#Creepy"]
+    post_frequency: 5_per_week
+
+hook_preferences:
+  categories: [curiosity_gap, shock_tension, personal_story]
+  emotional_tone: [fear, curiosity, suspense]
+
+competitors:
+  tiktok: []
+  instagram: []
+  youtube: []
+
+monetization:
+  affiliate_programs: [audible, kindle_unlimited]
+  product_types: [story_collections, audiobooks]
+  cpm_estimate: 11.0

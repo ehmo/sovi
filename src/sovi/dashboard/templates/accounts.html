@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}SOVI — Accounts{% endblock %}
+{% block content %}
+<h1>Accounts</h1>
+
+<div id="accounts-table" hx-get="/accounts" hx-trigger="every 10s" hx-select="#accounts-table" hx-swap="outerHTML">
+<table>
+  <thead>
+    <tr>
+      <th>Platform</th>
+      <th>Username</th>
+      <th>Niche</th>
+      <th>State</th>
+      <th>Day</th>
+      <th>Followers</th>
+      <th>Last Warmed</th>
+      <th>Device</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for a in accounts %}
+    <tr>
+      <td><span class="badge badge-{% if a.platform == 'tiktok' %}green{% elif a.platform == 'instagram' %}orange{% else %}dim{% endif %}">{{ a.platform }}</span></td>
+      <td><a href="/api/accounts/{{ a.id }}">{{ a.username }}</a></td>
+      <td>{{ a.niche_name or '—' }}</td>
+      <td>
+        <span class="badge badge-{% if 'warming' in (a.current_state or '') %}yellow{% elif a.current_state == 'active' %}green{% elif a.current_state in ('flagged', 'suspended', 'banned') %}red{% else %}dim{% endif %}">
+          {{ a.current_state }}
+        </span>
+      </td>
+      <td>{{ a.warming_day_count }}</td>
+      <td>{{ a.followers }}</td>
+      <td class="text-dim mono">{{ a.last_warmed_at.strftime('%m/%d %H:%M') if a.last_warmed_at else '—' }}</td>
+      <td>{{ a.device_name or '—' }}</td>
+    </tr>
+    {% endfor %}
+    {% if not accounts %}
+    <tr><td colspan="8" class="text-dim">No accounts yet</td></tr>
+    {% endif %}
+  </tbody>
+</table>
+</div>
+{% endblock %}

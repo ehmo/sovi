@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block title %}SOVI{% endblock %}</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="https://unpkg.com/htmx.org@2.0.4"></script>
+  <script src="https://unpkg.com/htmx-ext-sse@2.2.2/sse.js"></script>
+</head>
+<body>
+  <div class="layout">
+    <nav>
+      <div class="logo">SOVI</div>
+      <a href="/" {% if request.url.path == "/" %}class="active"{% endif %}>Overview</a>
+      <a href="/accounts" {% if "/accounts" in request.url.path %}class="active"{% endif %}>Accounts</a>
+      <a href="/devices" {% if "/devices" in request.url.path %}class="active"{% endif %}>Devices</a>
+      <a href="/events" {% if "/events" in request.url.path %}class="active"{% endif %}>Events</a>
+      <a href="/settings" {% if "/settings" in request.url.path %}class="active"{% endif %}>Settings</a>
+    </nav>
+    <main>
+      {% block content %}{% endblock %}
+    </main>
+  </div>
+</body>
+</html>

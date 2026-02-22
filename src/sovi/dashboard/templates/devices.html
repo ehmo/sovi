@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block title %}SOVI — Devices{% endblock %}
+{% block content %}
+<h1>Devices</h1>
+
+<div id="devices-table" hx-get="/devices" hx-trigger="every 10s" hx-select="#devices-table" hx-swap="outerHTML">
+<table>
+  <thead>
+    <tr>
+      <th>Name</th>
+      <th>Model</th>
+      <th>iOS</th>
+      <th>WDA Port</th>
+      <th>Status</th>
+      <th>UDID</th>
+      <th>Connected</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for d in devices %}
+    <tr>
+      <td><strong>{{ d.name or d.udid[:12] }}</strong></td>
+      <td>{{ d.model }}</td>
+      <td>{{ d.ios_version }}</td>
+      <td class="mono">{{ d.wda_port or '—' }}</td>
+      <td>
+        <span class="badge badge-{% if d.status == 'active' %}green{% elif d.status == 'disconnected' %}red{% elif d.status == 'maintenance' %}yellow{% else %}dim{% endif %}">
+          {{ d.status }}
+        </span>
+      </td>
+      <td class="mono text-dim">{{ d.udid[:16] }}...</td>
+      <td class="text-dim">{{ d.connected_since.strftime('%m/%d %H:%M') if d.connected_since else '—' }}</td>
+    </tr>
+    {% endfor %}
+    {% if not devices %}
+    <tr><td colspan="7" class="text-dim">No devices registered</td></tr>
+    {% endif %}
+  </tbody>
+</table>
+</div>
+
+<h2>Scheduler Threads</h2>
+<div hx-get="/api/scheduler/status" hx-trigger="every 5s" hx-swap="innerHTML" id="scheduler-threads">
+  <p class="text-dim">Loading...</p>
+</div>
+{% endblock %}

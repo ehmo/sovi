@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% block title %}SOVI — Overview{% endblock %}
+{% block content %}
+<h1>Fleet Overview</h1>
+
+<div class="cards" hx-get="/api/overview" hx-trigger="every 30s" hx-swap="none">
+  <div class="card">
+    <div class="label">Total Accounts</div>
+    <div class="value">{{ stats.total_accounts }}</div>
+  </div>
+  <div class="card">
+    <div class="label">Active Devices</div>
+    <div class="value">{{ stats.active_devices }}</div>
+  </div>
+  <div class="card">
+    <div class="label">Sessions Today</div>
+    <div class="value">{{ stats.sessions_today }}</div>
+  </div>
+  <div class="card">
+    <div class="label">Unresolved Errors</div>
+    <div class="value {% if stats.error_count > 0 %}severity-error{% endif %}">{{ stats.error_count }}</div>
+  </div>
+</div>
+
+<h2>Scheduler</h2>
+<div class="mb-2">
+  <button class="btn btn-primary" hx-post="/api/scheduler/start" hx-swap="none">Start Scheduler</button>
+  <button class="btn btn-danger" hx-post="/api/scheduler/stop" hx-swap="none">Stop Scheduler</button>
+  <span id="scheduler-status" class="text-dim text-sm" hx-get="/api/scheduler/status" hx-trigger="every 10s"></span>
+</div>
+
+<h2>Recent Events</h2>
+<table>
+  <thead>
+    <tr><th>Time</th><th>Severity</th><th>Type</th><th>Message</th></tr>
+  </thead>
+  <tbody>
+    {% for event in stats.recent_events %}
+    <tr>
+      <td class="text-dim mono">{{ event.timestamp.strftime('%H:%M:%S') if event.timestamp else '?' }}</td>
+      <td><span class="badge badge-{% if event.severity == 'error' or event.severity == 'critical' %}red{% elif event.severity == 'warning' %}yellow{% else %}dim{% endif %}">{{ event.severity }}</span></td>
+      <td>{{ event.event_type }}</td>
+      <td>{{ event.message[:80] }}</td>
+    </tr>
+    {% endfor %}
+    {% if not stats.recent_events %}
+    <tr><td colspan="4" class="text-dim">No events yet</td></tr>
+    {% endif %}
+  </tbody>
+</table>
+
+<h2>Niches</h2>
+<table>
+  <thead><tr><th>Name</th><th>Slug</th></tr></thead>
+  <tbody>
+    {% for niche in stats.niches %}
+    <tr><td>{{ niche.name }}</td><td class="mono">{{ niche.slug }}</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endblock %}

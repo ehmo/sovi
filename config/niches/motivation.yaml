@@ -1,0 +1,46 @@
+name: Motivation
+slug: motivation
+tier: 2
+active: true
+
+voice_profile:
+  tone: inspiring_direct
+  vocabulary: accessible
+  persona: "Motivational speaker who delivers hard truths with empathy"
+  elevenlabs_voice_id: null
+
+content_pillars:
+  - morning_routines
+  - discipline_habits
+  - stoic_philosophy
+  - success_mindset
+  - productivity_hacks
+  - overcoming_failure
+  - self_improvement
+
+formats:
+  primary: [faceless_narration, listicle]
+  secondary: [carousel, reddit_story]
+
+platforms:
+  tiktok:
+    hashtags: ["#motivation", "#mindset", "#discipline", "#grindset", "#selfimprovement"]
+    post_frequency: 5_per_week
+    duration_target_s: 45
+  instagram:
+    hashtags: ["#motivationmonday", "#mindsetshift", "#successmindset"]
+    post_frequency: 4_per_week
+    duration_target_s: 30
+
+hook_preferences:
+  categories: [bold_claim, personal_story, shock_tension, direct_callout]
+  emotional_tone: [urgency, inspiration]
+
+competitors:
+  tiktok: []
+  instagram: []
+
+monetization:
+  affiliate_programs: [audible, skillshare, masterclass]
+  product_types: [courses, journals, coaching]
+  cpm_estimate: 8.0
