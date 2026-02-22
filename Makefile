@@ -34,6 +34,10 @@ provision: ## Full studio setup (idempotent)
 	ssh $(STUDIO) '$(REMOTE_ENV) && \
 		if [ -d $(DEPLOY_PATH)/.git ]; then \
 			cd $(DEPLOY_PATH) && git pull origin main; \
+		elif [ -d $(DEPLOY_PATH) ]; then \
+			cd $(DEPLOY_PATH) && git init && \
+			git remote add origin $(REPO) && \
+			git fetch origin && git checkout -f main; \
 		else \
 			mkdir -p $$(dirname $(DEPLOY_PATH)) && \
 			git clone $(REPO) $(DEPLOY_PATH); \
@@ -99,8 +103,8 @@ health: ## Run sovi health remotely
 
 restart: ## Unload + load dashboard plist
 	@echo "==> Restarting dashboard..."
-	-ssh $(STUDIO) 'launchctl bootout gui/$$(id -u)/com.sovi.dashboard 2>/dev/null || true'
-	ssh $(STUDIO) 'launchctl bootstrap gui/$$(id -u) ~/Library/LaunchAgents/com.sovi.dashboard.plist'
+	-ssh $(STUDIO) 'launchctl unload ~/Library/LaunchAgents/com.sovi.dashboard.plist 2>/dev/null || true'
+	ssh $(STUDIO) 'launchctl load ~/Library/LaunchAgents/com.sovi.dashboard.plist'
 	@echo "==> Dashboard restarted."
 
 logs: ## Tail dashboard logs
