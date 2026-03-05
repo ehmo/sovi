@@ -37,7 +37,7 @@ def test_script_request():
     )
     req = ScriptRequest(
         topic=topic,
-        content_format=ContentFormat.FACELESS_NARRATION,
+        content_format=ContentFormat.FACELESS,
         target_duration_s=45,
     )
     assert req.target_platforms == [Platform.TIKTOK]
@@ -71,13 +71,13 @@ def test_engagement_snapshot():
         completion_rate=0.72,
     )
     assert snap.views == 10000
-    assert snap.retention_3s is None
+    assert snap.completion_rate == 0.72
 
 
 def test_all_enums_complete():
-    assert len(Platform) == 5
+    assert len(Platform) == 7
     assert len(ContentFormat) == 6
     assert len(VideoTier) == 6
     assert len(AccountState) == 12
-    assert len(ProductionStatus) == 7
+    assert len(ProductionStatus) == 6
     assert len(HookCategory) == 10

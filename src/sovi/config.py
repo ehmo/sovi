@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
@@ -11,26 +10,11 @@ import yaml
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from sovi.models import VideoTier
+
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 CONFIG_DIR = PROJECT_ROOT / "config"
 NICHES_DIR = CONFIG_DIR / "niches"
-
-
-class Platform(StrEnum):
-    TIKTOK = "tiktok"
-    INSTAGRAM = "instagram"
-    YOUTUBE = "youtube_shorts"
-    REDDIT = "reddit"
-    TWITTER = "x_twitter"
-
-
-class VideoTier(StrEnum):
-    FREE = "free"
-    BUDGET = "budget"
-    LOW_MID = "low_mid"
-    MID = "mid"
-    PREMIUM = "premium"
-    CINEMATIC = "cinematic"
 
 
 class Settings(BaseSettings):

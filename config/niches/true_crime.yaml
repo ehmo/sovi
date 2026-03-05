@@ -25,12 +25,42 @@ formats:
 platforms:
   tiktok:
     hashtags: ["#truecrime", "#crimetok", "#mystery", "#unsolved", "#coldcase"]
+    category: "Entertainment"
     post_frequency: 5_per_week
     duration_target_s: 60
   instagram:
     hashtags: ["#truecrimecommunity", "#truecrimejunkie", "#mysterycase"]
+    category: "Entertainment"
     post_frequency: 4_per_week
     duration_target_s: 45
+  youtube:
+    hashtags: ["#Shorts", "#TrueCrime", "#Mystery"]
+    category: "Entertainment"
+    post_frequency: 3_per_week
+    duration_target_s: 58
+  reddit:
+    subreddits:
+      - name: TrueCrime
+        min_karma: 200
+        min_age_days: 30
+        post_frequency: 1_per_week
+        content_style: analytical
+      - name: UnresolvedMysteries
+        min_karma: 200
+        min_age_days: 30
+        post_frequency: 1_per_week
+        content_style: investigative
+  twitter:
+    hashtags: ["#TrueCrime", "#ColdCase", "#Mystery"]
+    post_frequency: 5_per_week
+  facebook:
+    hashtags: ["#TrueCrime", "#Mystery", "#ColdCase"]
+    category: "Entertainment"
+    post_frequency: 3_per_week
+  linkedin:
+    hashtags: ["#TrueCrime", "#CriminalJustice", "#Forensics"]
+    category: "Law Enforcement"
+    post_frequency: 1_per_week
 
 hook_preferences:
   categories: [curiosity_gap, shock_tension, personal_story, numbers_data]

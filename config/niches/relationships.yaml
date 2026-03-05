@@ -1,0 +1,82 @@
+name: Relationships & Dating
+slug: relationships
+tier: 2
+active: true
+
+voice_profile:
+  tone: empathetic_direct
+  vocabulary: accessible
+  persona: "Relationship coach who gives honest, no-nonsense dating and love advice"
+  elevenlabs_voice_id: null
+
+content_pillars:
+  - dating_tips
+  - red_flags_green_flags
+  - communication_skills
+  - attachment_styles
+  - breakup_recovery
+  - self_worth
+  - relationship_psychology
+
+formats:
+  primary: [faceless_narration, listicle]
+  secondary: [carousel, reddit_story]
+
+platforms:
+  tiktok:
+    hashtags: ["#relationshiptok", "#datingadvice", "#lovetips", "#redflags", "#attachment"]
+    category: "Lifestyle"
+    post_frequency: 5_per_week
+    duration_target_s: 45
+  instagram:
+    hashtags: ["#relationshipadvice", "#datingtips", "#lovelessons"]
+    category: "Relationships"
+    post_frequency: 4_per_week
+    duration_target_s: 30
+  youtube:
+    hashtags: ["#Shorts", "#Dating", "#RelationshipAdvice"]
+    category: "People & Blogs"
+    post_frequency: 3_per_week
+    duration_target_s: 50
+  reddit:
+    subreddits:
+      - name: relationship_advice
+        min_karma: 100
+        min_age_days: 14
+        post_frequency: 2_per_week
+        content_style: advisory
+      - name: dating_advice
+        min_karma: 50
+        min_age_days: 7
+        post_frequency: 1_per_week
+        content_style: supportive
+      - name: AskMen
+        min_karma: 100
+        min_age_days: 14
+        post_frequency: 1_per_week
+        content_style: discussion
+  twitter:
+    hashtags: ["#DatingAdvice", "#Relationships", "#LoveTips"]
+    post_frequency: 7_per_week
+  facebook:
+    hashtags: ["#Relationships", "#DatingTips", "#Love"]
+    category: "Relationships"
+    post_frequency: 3_per_week
+  linkedin:
+    hashtags: ["#EmotionalIntelligence", "#Communication", "#PersonalGrowth"]
+    category: "Professional Training & Coaching"
+    post_frequency: 1_per_week
+
+hook_preferences:
+  categories: [bold_claim, personal_story, problem_pain, direct_callout]
+  emotional_tone: [curiosity, urgency]
+
+competitors:
+  tiktok: []
+  instagram: []
+  youtube: []
+
+monetization:
+  affiliate_programs: [audible, betterhelp, masterclass, hinge]
+  product_types: [courses, ebooks, coaching_sessions]
+  cpm_estimate: 8.0

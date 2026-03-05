@@ -1,0 +1,82 @@
+name: Pets & Animals
+slug: pets_animals
+tier: 2
+active: true
+
+voice_profile:
+  tone: warm_playful
+  vocabulary: accessible
+  persona: "Animal lover who shares pet care wisdom and heartwarming stories"
+  elevenlabs_voice_id: null
+
+content_pillars:
+  - pet_care_tips
+  - dog_training
+  - cat_behavior
+  - pet_nutrition
+  - funny_animal_facts
+  - rescue_stories
+  - pet_product_reviews
+
+formats:
+  primary: [faceless_narration, listicle]
+  secondary: [carousel, reddit_story]
+
+platforms:
+  tiktok:
+    hashtags: ["#pettok", "#dogsoftiktok", "#catsoftiktok", "#pettips", "#animals"]
+    category: "Animals"
+    post_frequency: 5_per_week
+    duration_target_s: 35
+  instagram:
+    hashtags: ["#petsofinstagram", "#dogsofinstagram", "#catsofinstagram"]
+    category: "Pets"
+    post_frequency: 4_per_week
+    duration_target_s: 30
+  youtube:
+    hashtags: ["#Shorts", "#Pets", "#Animals"]
+    category: "Pets & Animals"
+    post_frequency: 3_per_week
+    duration_target_s: 45
+  reddit:
+    subreddits:
+      - name: dogs
+        min_karma: 100
+        min_age_days: 14
+        post_frequency: 1_per_week
+        content_style: supportive
+      - name: cats
+        min_karma: 100
+        min_age_days: 14
+        post_frequency: 1_per_week
+        content_style: lighthearted
+      - name: Pets
+        min_karma: 50
+        min_age_days: 7
+        post_frequency: 1_per_week
+        content_style: educational
+  twitter:
+    hashtags: ["#PetCare", "#DogsOfTwitter", "#CatsOfTwitter"]
+    post_frequency: 5_per_week
+  facebook:
+    hashtags: ["#Pets", "#DogLovers", "#CatLovers"]
+    category: "Pet Supplies"
+    post_frequency: 4_per_week
+  linkedin:
+    hashtags: ["#PetIndustry", "#AnimalWelfare", "#VetMed"]
+    category: "Veterinary"
+    post_frequency: 1_per_week
+
+hook_preferences:
+  categories: [curiosity_gap, numbers_data, problem_pain, personal_story]
+  emotional_tone: [warmth, curiosity]
+
+competitors:
+  tiktok: []
+  instagram: []
+  youtube: []
+
+monetization:
+  affiliate_programs: [chewy, amazon_associates, petco, barkbox]
+  product_types: [pet_guides, training_courses, product_reviews]
+  cpm_estimate: 7.0

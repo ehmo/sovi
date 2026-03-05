@@ -15,8 +15,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import httpx
-import psycopg
-import psycopg.rows
+
+from sovi.db import sync_conn, sync_execute
+from sovi.device.wda_client import BUNDLE_IDS
 
 # Ensure homebrew on PATH
 _brew = "/opt/homebrew/bin"
@@ -29,25 +30,20 @@ _FALLBACK_DEVICES = [
     {"name": "iPhone-B", "udid": "00008140-001A00141163001C", "wda_port": 8101},
 ]
 
+# bundle_id → display name for health check (subset of BUNDLE_IDS worth checking)
 APPS = {
-    "com.zhiliaoapp.musically": "TikTok",
-    "com.burbn.instagram": "Instagram",
-    "com.google.ios.youtube": "YouTube",
-    "com.reddit.Reddit": "Reddit",
-    "com.atebits.Tweetie2": "X/Twitter",
+    BUNDLE_IDS["tiktok"]: "TikTok",
+    BUNDLE_IDS["instagram"]: "Instagram",
+    BUNDLE_IDS["youtube"]: "YouTube",
+    BUNDLE_IDS["reddit"]: "Reddit",
+    BUNDLE_IDS["twitter"]: "X/Twitter",
 }
-
-DB_URL = "postgresql://sovi:sovi@localhost:5432/sovi"
 
 
 def _get_devices() -> list[dict]:
     """Get device list from DB, falling back to hardcoded list."""
     try:
-        conn = psycopg.connect(DB_URL, row_factory=psycopg.rows.dict_row)
-        with conn.cursor() as cur:
-            cur.execute("SELECT name, udid, wda_port, status FROM devices ORDER BY name")
-            rows = cur.fetchall()
-        conn.close()
+        rows = sync_execute("SELECT name, udid, wda_port, status FROM devices ORDER BY name")
         if rows:
             return rows
     except Exception:
@@ -158,7 +154,7 @@ def check_database() -> dict:
     """Check database connection and table counts."""
     header("Database")
     try:
-        conn = psycopg.connect(DB_URL, row_factory=psycopg.rows.dict_row)
+        conn = sync_conn()
         with conn.cursor() as cur:
             tables = {
                 "niches": "Niches",
@@ -375,22 +371,18 @@ def check_scheduler() -> None:
 
     # Account fleet summary from DB
     try:
-        conn = psycopg.connect(DB_URL, row_factory=psycopg.rows.dict_row)
-        with conn.cursor() as cur:
-            cur.execute(
-                """SELECT platform, current_state, COUNT(*) as cnt
-                   FROM accounts
-                   WHERE deleted_at IS NULL
-                   GROUP BY platform, current_state
-                   ORDER BY platform, current_state"""
-            )
-            rows = cur.fetchall()
-            if rows:
-                print(f"\n  {'Platform':<12} {'State':<15} {'Count':>6}")
-                print(f"  {'-'*35}")
-                for r in rows:
-                    print(f"  {r['platform']:<12} {r['current_state']:<15} {r['cnt']:>6}")
-        conn.close()
+        rows = sync_execute(
+            """SELECT platform, current_state, COUNT(*) as cnt
+               FROM accounts
+               WHERE deleted_at IS NULL
+               GROUP BY platform, current_state
+               ORDER BY platform, current_state"""
+        )
+        if rows:
+            print(f"\n  {'Platform':<12} {'State':<15} {'Count':>6}")
+            print(f"  {'-'*35}")
+            for r in rows:
+                print(f"  {r['platform']:<12} {r['current_state']:<15} {r['cnt']:>6}")
     except Exception:
         pass
 

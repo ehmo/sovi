@@ -25,14 +25,17 @@ formats:
 platforms:
   tiktok:
     hashtags: ["#finance", "#moneytok", "#investing", "#personalfinance"]
+    category: "Finance/Business"
     post_frequency: 5_per_week
     duration_target_s: 45
   instagram:
     hashtags: ["#financetips", "#moneysaving", "#investing101"]
+    category: "Finance"
     post_frequency: 4_per_week
     duration_target_s: 30
   youtube:
     hashtags: ["#Shorts", "#Finance", "#MoneyTips"]
+    category: "Education"
     post_frequency: 3_per_week
     duration_target_s: 50
   reddit:
@@ -55,6 +58,14 @@ platforms:
   twitter:
     hashtags: ["#FinTwit", "#PersonalFinance"]
     post_frequency: 7_per_week
+  facebook:
+    hashtags: ["#MoneyTips", "#PersonalFinance"]
+    category: "Finance"
+    post_frequency: 3_per_week
+  linkedin:
+    hashtags: ["#Finance", "#PersonalFinance", "#Investing"]
+    category: "Financial Services"
+    post_frequency: 2_per_week
 
 hook_preferences:
   categories: [numbers_data, bold_claim, problem_pain, list_structure]

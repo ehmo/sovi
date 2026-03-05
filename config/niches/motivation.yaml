@@ -25,12 +25,42 @@ formats:
 platforms:
   tiktok:
     hashtags: ["#motivation", "#mindset", "#discipline", "#grindset", "#selfimprovement"]
+    category: "Education"
     post_frequency: 5_per_week
     duration_target_s: 45
   instagram:
     hashtags: ["#motivationmonday", "#mindsetshift", "#successmindset"]
+    category: "Self-Improvement"
     post_frequency: 4_per_week
     duration_target_s: 30
+  youtube:
+    hashtags: ["#Shorts", "#Motivation", "#Mindset"]
+    category: "Education"
+    post_frequency: 3_per_week
+    duration_target_s: 45
+  reddit:
+    subreddits:
+      - name: GetMotivated
+        min_karma: 100
+        min_age_days: 14
+        post_frequency: 2_per_week
+        content_style: inspirational
+      - name: selfimprovement
+        min_karma: 50
+        min_age_days: 7
+        post_frequency: 1_per_week
+        content_style: advisory
+  twitter:
+    hashtags: ["#Motivation", "#Mindset", "#SelfImprovement"]
+    post_frequency: 7_per_week
+  facebook:
+    hashtags: ["#Motivation", "#Success", "#Mindset"]
+    category: "Education"
+    post_frequency: 3_per_week
+  linkedin:
+    hashtags: ["#Leadership", "#Motivation", "#PersonalDevelopment"]
+    category: "Professional Training & Coaching"
+    post_frequency: 2_per_week
 
 hook_preferences:
   categories: [bold_claim, personal_story, shock_tension, direct_callout]

@@ -43,7 +43,9 @@ CREATE TYPE platform_type AS ENUM (
     'instagram',
     'youtube_shorts',
     'reddit',
-    'x_twitter'
+    'x_twitter',
+    'facebook',
+    'linkedin'
 );
 
 CREATE TYPE account_status AS ENUM (
@@ -335,6 +337,10 @@ CREATE TABLE accounts (
     proxy_id        UUID REFERENCES proxies(id) ON DELETE SET NULL,
     browser_profile_id TEXT,                         -- GoLogin/Multilogin profile ID
 
+    -- Persona linkage
+    persona_id      UUID REFERENCES personas(id) ON DELETE SET NULL,
+    email_account_id UUID REFERENCES email_accounts(id) ON DELETE SET NULL,
+
     -- Status and warming
     status          account_status NOT NULL DEFAULT 'created',
     warming_phase   warming_phase,
@@ -393,6 +399,100 @@ CREATE INDEX idx_accounts_device ON accounts (device_id);
 CREATE INDEX idx_accounts_proxy ON accounts (proxy_id);
 CREATE INDEX idx_accounts_health ON accounts (health_score) WHERE deleted_at IS NULL;
 CREATE INDEX idx_accounts_last_posted ON accounts (last_posted_at);
+
+-- =============================================================================
+-- TABLE: personas
+-- =============================================================================
+-- A complete fictional identity used across multiple platform accounts.
+-- Each persona has a name, face photos, bio, and interests tied to a niche.
+
+CREATE TABLE personas (
+    id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    niche_id        UUID NOT NULL REFERENCES niches(id) ON DELETE RESTRICT,
+
+    -- Identity
+    first_name      TEXT NOT NULL,
+    last_name       TEXT NOT NULL,
+    display_name    TEXT NOT NULL,         -- "Emily Johnson"
+    username_base   TEXT NOT NULL,         -- "emilyjohnson" (derive per-platform usernames)
+
+    -- Demographics
+    gender          TEXT NOT NULL,         -- 'female', 'male', 'nonbinary'
+    date_of_birth   DATE NOT NULL,
+    age             SMALLINT NOT NULL,     -- computed at generation, stored for convenience
+    country         TEXT NOT NULL DEFAULT 'US',
+    state           TEXT,
+    city            TEXT,
+
+    -- Profile
+    occupation      TEXT,
+    bio_short       TEXT NOT NULL,         -- 1-2 sentences for social bios
+    bio_long        TEXT,                  -- longer version for LinkedIn/about pages
+    interests       TEXT[] NOT NULL DEFAULT '{}',
+    personality     JSONB DEFAULT '{}'::jsonb,
+
+    -- Photo generation
+    face_seed       TEXT,                  -- reference image path or generation seed
+    photo_style     TEXT DEFAULT 'realistic',
+    photos_generated BOOLEAN DEFAULT false,
+
+    -- Status: draft → ready → active → retired
+    status          TEXT NOT NULL DEFAULT 'draft',
+
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX idx_personas_niche ON personas (niche_id);
+CREATE INDEX idx_personas_status ON personas (status);
+
+-- =============================================================================
+-- TABLE: persona_photos
+-- =============================================================================
+-- AI-generated face photos for a persona. 10+ per persona for realism.
+
+CREATE TABLE persona_photos (
+    id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    persona_id      UUID NOT NULL REFERENCES personas(id) ON DELETE CASCADE,
+
+    file_path       TEXT NOT NULL,          -- local path to image
+    photo_type      TEXT NOT NULL,          -- 'headshot', 'casual', 'professional', 'lifestyle'
+    prompt_used     TEXT,                   -- the generation prompt
+    width           INT,
+    height          INT,
+    is_primary      BOOLEAN DEFAULT false,  -- the main profile photo
+
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX idx_persona_photos_persona ON persona_photos (persona_id);
+
+-- =============================================================================
+-- TABLE: email_accounts
+-- =============================================================================
+-- Email accounts created for personas. Each persona needs at least one email
+-- before platform accounts can be created.
+
+CREATE TABLE email_accounts (
+    id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    persona_id      UUID REFERENCES personas(id) ON DELETE SET NULL,
+
+    provider        TEXT NOT NULL,           -- 'outlook', 'hotmail', 'mailcom', 'icloud'
+    email           TEXT NOT NULL,           -- ENCRYPTED
+    password        TEXT NOT NULL,           -- ENCRYPTED
+    imap_host       TEXT NOT NULL,
+    imap_port       INT NOT NULL DEFAULT 993,
+    domain          TEXT NOT NULL,           -- 'outlook.com', 'mail.com', etc.
+
+    status          TEXT NOT NULL DEFAULT 'available',  -- available, assigned, disabled, locked
+    phone_used      BOOLEAN DEFAULT false,
+
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX idx_email_accounts_status ON email_accounts (status) WHERE status = 'available';
+CREATE INDEX idx_email_accounts_persona ON email_accounts (persona_id);
 
 -- =============================================================================
 -- TABLE: hook_templates

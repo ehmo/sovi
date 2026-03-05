@@ -1,0 +1,82 @@
+name: Fashion & Beauty
+slug: fashion_beauty
+tier: 2
+active: true
+
+voice_profile:
+  tone: trendy_relatable
+  vocabulary: accessible
+  persona: "Style-savvy creator who shares affordable fashion and beauty secrets"
+  elevenlabs_voice_id: null
+
+content_pillars:
+  - outfit_ideas
+  - skincare_routines
+  - budget_fashion
+  - beauty_hacks
+  - trend_alerts
+  - makeup_tutorials
+  - capsule_wardrobe
+
+formats:
+  primary: [faceless_narration, listicle]
+  secondary: [carousel, reddit_story]
+
+platforms:
+  tiktok:
+    hashtags: ["#fashiontok", "#beautytok", "#ootd", "#skincare", "#styletips"]
+    category: "Beauty & Style"
+    post_frequency: 5_per_week
+    duration_target_s: 35
+  instagram:
+    hashtags: ["#fashioninspo", "#beautytips", "#outfitoftheday"]
+    category: "Beauty"
+    post_frequency: 5_per_week
+    duration_target_s: 30
+  youtube:
+    hashtags: ["#Shorts", "#Fashion", "#Beauty"]
+    category: "Howto & Style"
+    post_frequency: 3_per_week
+    duration_target_s: 45
+  reddit:
+    subreddits:
+      - name: femalefashionadvice
+        min_karma: 100
+        min_age_days: 14
+        post_frequency: 1_per_week
+        content_style: advisory
+      - name: SkincareAddiction
+        min_karma: 100
+        min_age_days: 14
+        post_frequency: 1_per_week
+        content_style: educational
+      - name: frugalmalefashion
+        min_karma: 50
+        min_age_days: 7
+        post_frequency: 1_per_week
+        content_style: deal_hunting
+  twitter:
+    hashtags: ["#FashionTips", "#BeautySecrets"]
+    post_frequency: 7_per_week
+  facebook:
+    hashtags: ["#Fashion", "#Beauty", "#StyleInspo"]
+    category: "Beauty, Cosmetic & Personal Care"
+    post_frequency: 3_per_week
+  linkedin:
+    hashtags: ["#FashionIndustry", "#PersonalBranding", "#Style"]
+    category: "Apparel & Fashion"
+    post_frequency: 1_per_week
+
+hook_preferences:
+  categories: [curiosity_gap, bold_claim, list_structure, numbers_data]
+  emotional_tone: [excitement, curiosity]
+
+competitors:
+  tiktok: []
+  instagram: []
+  youtube: []
+
+monetization:
+  affiliate_programs: [amazon_associates, sephora, shein, nordstrom]
+  product_types: [style_guides, skincare_routines, lookbooks]
+  cpm_estimate: 8.5

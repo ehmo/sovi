@@ -1,0 +1,82 @@
+name: Food & Cooking
+slug: food_cooking
+tier: 2
+active: true
+
+voice_profile:
+  tone: warm_enthusiastic
+  vocabulary: accessible
+  persona: "Home chef who makes cooking fun and easy for beginners"
+  elevenlabs_voice_id: null
+
+content_pillars:
+  - quick_recipes
+  - budget_meals
+  - meal_prep
+  - kitchen_hacks
+  - restaurant_copycat
+  - air_fryer_recipes
+  - baking_basics
+
+formats:
+  primary: [faceless_narration, listicle]
+  secondary: [carousel, reddit_story]
+
+platforms:
+  tiktok:
+    hashtags: ["#foodtok", "#cooking", "#recipe", "#easyrecipe", "#foodhack"]
+    category: "Food & Drink"
+    post_frequency: 5_per_week
+    duration_target_s: 40
+  instagram:
+    hashtags: ["#foodie", "#homecooking", "#recipeoftheday"]
+    category: "Food & Drink"
+    post_frequency: 4_per_week
+    duration_target_s: 30
+  youtube:
+    hashtags: ["#Shorts", "#Cooking", "#Recipe"]
+    category: "Howto & Style"
+    post_frequency: 3_per_week
+    duration_target_s: 50
+  reddit:
+    subreddits:
+      - name: cooking
+        min_karma: 100
+        min_age_days: 14
+        post_frequency: 2_per_week
+        content_style: instructional
+      - name: EatCheapAndHealthy
+        min_karma: 50
+        min_age_days: 14
+        post_frequency: 1_per_week
+        content_style: practical
+      - name: MealPrepSunday
+        min_karma: 50
+        min_age_days: 7
+        post_frequency: 1_per_week
+        content_style: inspirational
+  twitter:
+    hashtags: ["#FoodTips", "#HomeCooking"]
+    post_frequency: 5_per_week
+  facebook:
+    hashtags: ["#Recipe", "#Cooking", "#Foodie"]
+    category: "Food & Beverage"
+    post_frequency: 4_per_week
+  linkedin:
+    hashtags: ["#FoodIndustry", "#Nutrition", "#WellBeing"]
+    category: "Food & Beverages"
+    post_frequency: 1_per_week
+
+hook_preferences:
+  categories: [curiosity_gap, numbers_data, list_structure, bold_claim]
+  emotional_tone: [excitement, curiosity]
+
+competitors:
+  tiktok: []
+  instagram: []
+  youtube: []
+
+monetization:
+  affiliate_programs: [amazon_associates, instacart, hello_fresh, walmart]
+  product_types: [recipe_ebooks, meal_plan_subscriptions, kitchen_tools]
+  cpm_estimate: 9.0

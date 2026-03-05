@@ -13,7 +13,6 @@ dependencies = [
 
     # Database
     "psycopg[binary,pool]>=3.2",
-    "asyncpg>=0.30",
 
     # AI / LLM
     "anthropic>=0.42",
@@ -38,15 +37,6 @@ dependencies = [
     # Video / Image
     "Pillow>=11.0",
 
-    # Scheduling / Tasks
-    "celery[redis]>=5.4",
-    "redis>=5.2",
-
-    # gRPC (Python client for Swift daemon)
-    "grpcio>=1.69",
-    "grpcio-tools>=1.69",
-    "protobuf>=5.29",
-
     # Crypto
     "cryptography>=44.0",
     "pyotp>=2.9",
@@ -60,12 +50,6 @@ dependencies = [
 
     # Auth / Verification
     "imapclient>=3.0",
-
-    # Utilities
-    "python-dotenv>=1.0",
-    "structlog>=24.4",
-    "click>=8.1",
-    "rich>=13.9",
 ]
 
 [project.optional-dependencies]
@@ -82,7 +66,7 @@ analytics = [
 ]
 
 [project.scripts]
-sovi = "sovi.cli:main"
+sovi = "sovi.__main__:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/sovi"]

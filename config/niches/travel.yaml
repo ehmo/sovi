@@ -1,0 +1,82 @@
+name: Travel
+slug: travel
+tier: 2
+active: true
+
+voice_profile:
+  tone: adventurous_informative
+  vocabulary: accessible
+  persona: "Seasoned traveler who shares budget tips and hidden destinations"
+  elevenlabs_voice_id: null
+
+content_pillars:
+  - budget_travel
+  - hidden_gems
+  - travel_hacks
+  - destination_guides
+  - solo_travel
+  - flight_deals
+  - packing_tips
+
+formats:
+  primary: [faceless_narration, listicle]
+  secondary: [carousel, reddit_story]
+
+platforms:
+  tiktok:
+    hashtags: ["#traveltok", "#travel", "#budgettravel", "#hiddengems", "#travelhack"]
+    category: "Travel"
+    post_frequency: 5_per_week
+    duration_target_s: 45
+  instagram:
+    hashtags: ["#travelgram", "#wanderlust", "#traveltips"]
+    category: "Travel"
+    post_frequency: 4_per_week
+    duration_target_s: 30
+  youtube:
+    hashtags: ["#Shorts", "#Travel", "#TravelTips"]
+    category: "Travel & Events"
+    post_frequency: 3_per_week
+    duration_target_s: 50
+  reddit:
+    subreddits:
+      - name: travel
+        min_karma: 200
+        min_age_days: 30
+        post_frequency: 1_per_week
+        content_style: informative
+      - name: solotravel
+        min_karma: 100
+        min_age_days: 14
+        post_frequency: 1_per_week
+        content_style: experiential
+      - name: Shoestring
+        min_karma: 50
+        min_age_days: 14
+        post_frequency: 1_per_week
+        content_style: budget_focused
+  twitter:
+    hashtags: ["#TravelTips", "#BudgetTravel", "#Wanderlust"]
+    post_frequency: 5_per_week
+  facebook:
+    hashtags: ["#Travel", "#TravelDeals", "#Wanderlust"]
+    category: "Travel & Transportation"
+    post_frequency: 3_per_week
+  linkedin:
+    hashtags: ["#TravelIndustry", "#Tourism", "#RemoteWork"]
+    category: "Leisure, Travel & Tourism"
+    post_frequency: 1_per_week
+
+hook_preferences:
+  categories: [numbers_data, curiosity_gap, bold_claim, list_structure]
+  emotional_tone: [excitement, wanderlust]
+
+competitors:
+  tiktok: []
+  instagram: []
+  youtube: []
+
+monetization:
+  affiliate_programs: [booking_com, skyscanner, airbnb, away_luggage]
+  product_types: [travel_guides, itineraries, packing_lists]
+  cpm_estimate: 11.0

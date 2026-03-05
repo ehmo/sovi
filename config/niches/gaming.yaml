@@ -1,0 +1,82 @@
+name: Gaming
+slug: gaming
+tier: 2
+active: true
+
+voice_profile:
+  tone: casual_hype
+  vocabulary: gamer_accessible
+  persona: "Gaming insider who shares tips, news, and hidden gems"
+  elevenlabs_voice_id: null
+
+content_pillars:
+  - game_reviews
+  - tips_and_tricks
+  - hidden_easter_eggs
+  - gaming_news
+  - best_games_lists
+  - game_lore
+  - retro_gaming
+
+formats:
+  primary: [faceless_narration, listicle]
+  secondary: [carousel, reddit_story]
+
+platforms:
+  tiktok:
+    hashtags: ["#gamingtok", "#gaming", "#gamer", "#videogames", "#gamertips"]
+    category: "Gaming"
+    post_frequency: 5_per_week
+    duration_target_s: 40
+  instagram:
+    hashtags: ["#gamerlife", "#gamingcommunity", "#videogames"]
+    category: "Gaming"
+    post_frequency: 4_per_week
+    duration_target_s: 30
+  youtube:
+    hashtags: ["#Shorts", "#Gaming", "#GamerTips"]
+    category: "Gaming"
+    post_frequency: 4_per_week
+    duration_target_s: 55
+  reddit:
+    subreddits:
+      - name: gaming
+        min_karma: 200
+        min_age_days: 30
+        post_frequency: 2_per_week
+        content_style: casual
+      - name: Games
+        min_karma: 200
+        min_age_days: 30
+        post_frequency: 1_per_week
+        content_style: analytical
+      - name: patientgamers
+        min_karma: 100
+        min_age_days: 14
+        post_frequency: 1_per_week
+        content_style: discussion
+  twitter:
+    hashtags: ["#Gaming", "#VideoGames", "#GamerNews"]
+    post_frequency: 7_per_week
+  facebook:
+    hashtags: ["#Gaming", "#Gamer", "#VideoGames"]
+    category: "Gaming"
+    post_frequency: 3_per_week
+  linkedin:
+    hashtags: ["#GamingIndustry", "#Esports", "#GameDev"]
+    category: "Computer Games"
+    post_frequency: 1_per_week
+
+hook_preferences:
+  categories: [curiosity_gap, bold_claim, numbers_data, shock_tension]
+  emotional_tone: [excitement, nostalgia]
+
+competitors:
+  tiktok: []
+  instagram: []
+  youtube: []
+
+monetization:
+  affiliate_programs: [amazon_associates, g2a, humble_bundle, razer]
+  product_types: [gaming_guides, merch, tier_lists]
+  cpm_estimate: 7.5

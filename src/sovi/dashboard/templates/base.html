@@ -13,6 +13,7 @@
     <nav>
       <div class="logo">SOVI</div>
       <a href="/" {% if request.url.path == "/" %}class="active"{% endif %}>Overview</a>
+      <a href="/personas" {% if "/personas" in request.url.path %}class="active"{% endif %}>Personas</a>
       <a href="/accounts" {% if "/accounts" in request.url.path %}class="active"{% endif %}>Accounts</a>
       <a href="/devices" {% if "/devices" in request.url.path %}class="active"{% endif %}>Devices</a>
       <a href="/events" {% if "/events" in request.url.path %}class="active"{% endif %}>Events</a>

@@ -1,0 +1,82 @@
+name: DIY & Home Improvement
+slug: diy_home
+tier: 2
+active: true
+
+voice_profile:
+  tone: practical_encouraging
+  vocabulary: accessible
+  persona: "Handy neighbor who makes DIY projects simple and satisfying"
+  elevenlabs_voice_id: null
+
+content_pillars:
+  - budget_renovations
+  - organization_hacks
+  - furniture_flips
+  - tool_tutorials
+  - small_space_solutions
+  - home_maintenance
+  - decor_on_a_dime
+
+formats:
+  primary: [faceless_narration, listicle]
+  secondary: [carousel, reddit_story]
+
+platforms:
+  tiktok:
+    hashtags: ["#diytok", "#homeimprovement", "#diyprojects", "#homerenovation", "#lifehack"]
+    category: "Home & Garden"
+    post_frequency: 5_per_week
+    duration_target_s: 40
+  instagram:
+    hashtags: ["#diyhomedecor", "#homeimprovement", "#beforeandafter"]
+    category: "Home & Garden"
+    post_frequency: 4_per_week
+    duration_target_s: 30
+  youtube:
+    hashtags: ["#Shorts", "#DIY", "#HomeImprovement"]
+    category: "Howto & Style"
+    post_frequency: 3_per_week
+    duration_target_s: 55
+  reddit:
+    subreddits:
+      - name: DIY
+        min_karma: 200
+        min_age_days: 30
+        post_frequency: 1_per_week
+        content_style: tutorial
+      - name: HomeImprovement
+        min_karma: 100
+        min_age_days: 14
+        post_frequency: 1_per_week
+        content_style: advisory
+      - name: organization
+        min_karma: 50
+        min_age_days: 7
+        post_frequency: 1_per_week
+        content_style: inspirational
+  twitter:
+    hashtags: ["#DIY", "#HomeImprovement", "#HomeMakeover"]
+    post_frequency: 5_per_week
+  facebook:
+    hashtags: ["#DIY", "#HomeDecor", "#HomeImprovement"]
+    category: "Home & Garden"
+    post_frequency: 4_per_week
+  linkedin:
+    hashtags: ["#RealEstate", "#HomeImprovement", "#InteriorDesign"]
+    category: "Construction"
+    post_frequency: 1_per_week
+
+hook_preferences:
+  categories: [numbers_data, bold_claim, problem_pain, curiosity_gap]
+  emotional_tone: [satisfaction, curiosity]
+
+competitors:
+  tiktok: []
+  instagram: []
+  youtube: []
+
+monetization:
+  affiliate_programs: [amazon_associates, home_depot, lowes, ryobi]
+  product_types: [project_plans, tool_guides, renovation_checklists]
+  cpm_estimate: 9.5

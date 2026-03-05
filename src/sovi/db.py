@@ -1,4 +1,24 @@
-"""Database connection pool and helpers."""
+"""Database connection pool and helpers.
+
+Concurrency contract:
+  ┌──────────────┐      ┌─────────────────────────────────┐
+  │  Dashboard    │      │  Scheduler (1 thread per device) │
+  │  (asyncio)   │      │  + events.emit() from threads    │
+  └──────┬───────┘      └──────────────┬──────────────────┘
+         │                             │
+    async pool                  sync_conn() per call
+    (psycopg_pool)              (new connection each time)
+         │                             │
+         └──────────┬──────────────────┘
+                    │
+             PostgreSQL (max_connections=100)
+
+- Async callers: use execute()/execute_one() which borrow from the pool.
+- Sync callers (scheduler threads, CLI): use sync_conn()/sync_execute()
+  which open a fresh connection per call. This is safe because threads
+  are few (1 per device, typically 2-4) and sessions are long (45 min).
+- Never mix: don't call async helpers from threads or sync from async.
+"""
 
 from __future__ import annotations
 

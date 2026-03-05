@@ -19,15 +19,12 @@ from typing import Any
 from sovi import events
 from sovi.auth import totp
 from sovi.crypto import decrypt
-from sovi.device.wda_client import WDASession, DeviceAutomation
+from sovi.device.wda_client import BUNDLE_IDS, WDASession, DeviceAutomation
 
 logger = logging.getLogger(__name__)
 
-# Bundle IDs
-BUNDLES: dict[str, str] = {
-    "tiktok": "com.zhiliaoapp.musically",
-    "instagram": "com.burbn.instagram",
-}
+# Re-export for existing importers
+BUNDLES = BUNDLE_IDS
 
 # App Store display names (for search)
 APP_NAMES: dict[str, str] = {

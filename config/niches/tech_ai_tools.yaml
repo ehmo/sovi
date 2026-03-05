@@ -24,14 +24,17 @@ formats:
 platforms:
   tiktok:
     hashtags: ["#techtok", "#ai", "#productivity", "#tools"]
+    category: "Science & Technology"
     post_frequency: 5_per_week
     duration_target_s: 30
   instagram:
     hashtags: ["#techtools", "#aitools", "#productivity"]
+    category: "Science & Technology"
     post_frequency: 4_per_week
     duration_target_s: 30
   youtube:
     hashtags: ["#Shorts", "#AI", "#TechTips"]
+    category: "Science & Technology"
     post_frequency: 4_per_week
     duration_target_s: 45
   reddit:
@@ -49,6 +52,14 @@ platforms:
   twitter:
     hashtags: ["#AI", "#Tech", "#Productivity"]
     post_frequency: 10_per_week
+  facebook:
+    hashtags: ["#Tech", "#AI", "#Productivity"]
+    category: "Science & Technology"
+    post_frequency: 3_per_week
+  linkedin:
+    hashtags: ["#AI", "#Technology", "#Productivity", "#Innovation"]
+    category: "Information Technology & Services"
+    post_frequency: 3_per_week
 
 hook_preferences:
   categories: [bold_claim, numbers_data, urgency_fomo, curiosity_gap]

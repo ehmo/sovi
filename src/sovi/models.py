@@ -18,6 +18,8 @@ class Platform(StrEnum):
     YOUTUBE = "youtube_shorts"
     REDDIT = "reddit"
     TWITTER = "x_twitter"
+    FACEBOOK = "facebook"
+    LINKEDIN = "linkedin"
 
 
 class ContentFormat(StrEnum):

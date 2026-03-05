@@ -9,12 +9,11 @@ import pytest
 from sovi.config import (
     CONFIG_DIR,
     NICHES_DIR,
-    Platform,
     Settings,
-    VideoTier,
     load_all_niche_configs,
     load_niche_config,
 )
+from sovi.models import Platform, VideoTier
 
 
 def test_settings_defaults():
@@ -31,7 +30,7 @@ def test_settings_defaults():
 def test_platform_enum():
     assert Platform.TIKTOK == "tiktok"
     assert Platform.REDDIT == "reddit"
-    assert len(Platform) == 5
+    assert len(Platform) == 7
 
 
 def test_video_tier_enum():

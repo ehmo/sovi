@@ -1,0 +1,87 @@
+{% extends "base.html" %}
+{% block title %}SOVI — Personas{% endblock %}
+{% block content %}
+<h1>Personas</h1>
+
+{% if pipeline %}
+<div class="cards">
+  <div class="card">
+    <div class="label">Total Personas</div>
+    <div class="value">{{ pipeline.total_personas }}</div>
+  </div>
+  <div class="card">
+    <div class="label">With Email</div>
+    <div class="value">{{ pipeline.with_email }} <span class="text-dim text-sm">({{ pipeline.email_pct }}%)</span></div>
+  </div>
+  <div class="card">
+    <div class="label">With Photos</div>
+    <div class="value">{{ pipeline.with_photos }}</div>
+  </div>
+  <div class="card">
+    <div class="label">Platform Accounts</div>
+    <div class="value">{{ pipeline.total_accounts }} <span class="text-dim text-sm">/ {{ pipeline.total_possible_accounts }}</span></div>
+  </div>
+</div>
+
+{% if pipeline.accounts_by_platform %}
+<h2>Accounts by Platform</h2>
+<div class="cards">
+  {% for platform, count in pipeline.accounts_by_platform.items() %}
+  <div class="card">
+    <div class="label">{{ platform }}</div>
+    <div class="value">{{ count }}</div>
+  </div>
+  {% endfor %}
+</div>
+{% endif %}
+{% endif %}
+
+<h2>Persona List</h2>
+<table>
+  <thead>
+    <tr>
+      <th>Name</th>
+      <th>Niche</th>
+      <th>Age</th>
+      <th>Email</th>
+      <th>TT</th>
+      <th>IG</th>
+      <th>YT</th>
+      <th>RD</th>
+      <th>FB</th>
+      <th>LI</th>
+      <th>Status</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for p in personas %}
+    <tr>
+      <td><a href="/personas/{{ p.id }}">{{ p.display_name }}</a></td>
+      <td class="text-dim">{{ p.niche_slug }}</td>
+      <td>{{ p.age }}</td>
+      <td>{% if p.has_email %}<span class="badge badge-dim">yes</span>{% else %}<span class="text-dim">-</span>{% endif %}</td>
+      {% for plat in ['tiktok', 'instagram', 'youtube_shorts', 'reddit', 'facebook', 'linkedin'] %}
+      <td>
+        {% if plat in p.accounts %}
+          {% set acct = p.accounts[plat] %}
+          {% if acct.current_state == 'active' %}
+            <span class="badge badge-dim">A</span>
+          {% elif 'warming' in acct.current_state %}
+            <span class="badge badge-yellow">W{{ acct.warming_day_count }}</span>
+          {% else %}
+            <span class="badge badge-dim">CR</span>
+          {% endif %}
+        {% else %}
+          <span class="text-dim">-</span>
+        {% endif %}
+      </td>
+      {% endfor %}
+      <td><span class="badge badge-{% if p.status == 'active' %}dim{% elif p.status == 'ready' %}yellow{% else %}dim{% endif %}">{{ p.status }}</span></td>
+    </tr>
+    {% endfor %}
+    {% if not personas %}
+    <tr><td colspan="11" class="text-dim">No personas yet. Generate with: python -m sovi personas generate --niche SLUG</td></tr>
+    {% endif %}
+  </tbody>
+</table>
+{% endblock %}

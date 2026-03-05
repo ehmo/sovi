@@ -1,18 +1,26 @@
 """SOVI CLI — unified entry point for all tools.
 
 Usage:
-    python -m sovi health          # System health check
-    python -m sovi warm             # Run warming session (legacy)
-    python -m sovi produce          # Produce video from topic
-    python -m sovi dry-run          # Dry-run pipeline validation
-    python -m sovi research         # Run research scanner
-    python -m sovi db               # Database summary
-    python -m sovi server           # Start dashboard (FastAPI on port 8888)
-    python -m sovi scheduler start  # Start continuous scheduler daemon
-    python -m sovi scheduler status # Show device threads + current tasks
-    python -m sovi accounts list    # List accounts
-    python -m sovi devices list     # List devices
-    python -m sovi devices add      # Register new device
+    sovi health                # System health check
+    sovi status                # Show system status summary
+    sovi db-check              # Verify database connectivity
+    sovi niche-info --slug X   # Show niche configuration
+    sovi warm                  # Run warming session (legacy)
+    sovi produce               # Produce video from topic
+    sovi dry-run               # Dry-run pipeline validation
+    sovi research              # Run research scanner
+    sovi db                    # Database summary
+    sovi server                # Start dashboard (FastAPI on port 8888)
+    sovi scheduler start       # Start continuous scheduler daemon
+    sovi scheduler status      # Show device threads + current tasks
+    sovi accounts list         # List accounts
+    sovi devices list          # List devices
+    sovi devices add           # Register new device
+    sovi personas generate     # Generate personas for a niche
+    sovi personas generate-all # Generate for all active niches
+    sovi personas photos       # Generate photos for pending personas
+    sovi personas list         # List personas
+    sovi personas pipeline     # Show pipeline status
 """
 
 from __future__ import annotations
@@ -24,17 +32,57 @@ import logging
 import sys
 from datetime import datetime, timezone
 
-import psycopg
-import psycopg.rows
-
-
-DB_URL = "postgresql://sovi:sovi@localhost:5432/sovi"
+from sovi.db import sync_conn
 
 
 def cmd_health(args: argparse.Namespace) -> None:
     """Run system health check."""
     from sovi.cli.health_check import main as health_main
     health_main()
+
+
+def cmd_status(args: argparse.Namespace) -> None:
+    """Show system status summary."""
+    from sovi.config import settings
+    print("\nSOVI System Status")
+    print(f"  Database: {settings.database_url.split('@')[-1]}")
+    print(f"  Redis: {settings.redis_url}")
+    print(f"  Temporal: {settings.temporal_host}")
+    print(f"  Device Daemon: {settings.device_daemon_host}")
+    print(f"  Video Target: {settings.daily_video_target}/day")
+    print(f"  Default Tier: {settings.default_video_tier}")
+    print()
+
+
+def cmd_db_check(args: argparse.Namespace) -> None:
+    """Verify database connectivity."""
+    from sovi.db import close_pool, execute_one, init_pool
+
+    async def _check() -> None:
+        await init_pool(min_size=1, max_size=1)
+        row = await execute_one("SELECT 1 AS ok")
+        if row and row["ok"] == 1:
+            print("Database connection OK")
+        else:
+            print("Database check failed")
+        await close_pool()
+
+    asyncio.run(_check())
+
+
+def cmd_niche_info(args: argparse.Namespace) -> None:
+    """Show niche configuration."""
+    from sovi.config import load_niche_config
+    slug = args.slug
+    if not slug:
+        print("Error: --slug is required")
+        sys.exit(1)
+    try:
+        cfg = load_niche_config(slug)
+        print(json.dumps(cfg, indent=2, default=str))
+    except FileNotFoundError as e:
+        print(f"Error: {e}")
+        sys.exit(1)
 
 
 def cmd_warm(args: argparse.Namespace) -> None:
@@ -105,7 +153,7 @@ def cmd_research(args: argparse.Namespace) -> None:
 def cmd_db(args: argparse.Namespace) -> None:
     """Show database summary."""
     try:
-        conn = psycopg.connect(DB_URL, row_factory=psycopg.rows.dict_row)
+        conn = sync_conn()
     except Exception as e:
         print(f"Cannot connect to database: {e}")
         sys.exit(1)
@@ -113,7 +161,8 @@ def cmd_db(args: argparse.Namespace) -> None:
     with conn.cursor() as cur:
         # Table counts
         tables = [
-            "niches", "hooks", "trending_topics", "content",
+            "niches", "personas", "persona_photos", "email_accounts",
+            "hooks", "trending_topics", "content",
             "distributions", "accounts", "devices", "metric_snapshots",
             "system_events",
         ]
@@ -257,7 +306,7 @@ def cmd_accounts(args: argparse.Namespace) -> None:
     action = args.action
 
     if action == "list":
-        conn = psycopg.connect(DB_URL, row_factory=psycopg.rows.dict_row)
+        conn = sync_conn()
         with conn.cursor() as cur:
             conditions = ["deleted_at IS NULL"]
             params: list = []
@@ -302,12 +351,161 @@ def cmd_accounts(args: argparse.Namespace) -> None:
         print(f"  Niche: {args.niche}")
 
 
+def cmd_personas(args: argparse.Namespace) -> None:
+    """Manage personas."""
+    action = args.action
+
+    if action == "generate":
+        niche = args.niche
+        count = args.count
+        if not niche:
+            print("Error: --niche is required")
+            sys.exit(1)
+        from sovi.persona import create_persona_batch
+        print(f"Generating {count} personas for niche: {niche}...")
+        ids = create_persona_batch(niche, count)
+        print(f"Created {len(ids)} personas")
+        for pid in ids:
+            print(f"  {pid}")
+
+    elif action == "generate-all":
+        count = args.count
+        from sovi.config import load_all_niche_configs
+        from sovi.persona import create_persona_batch
+        niches = load_all_niche_configs()
+        if not niches:
+            print("No niche configs found")
+            sys.exit(1)
+
+        total = 0
+        for slug in niches:
+            print(f"\nGenerating {count} personas for {slug}...")
+            try:
+                ids = create_persona_batch(slug, count)
+                total += len(ids)
+                print(f"  Created {len(ids)} personas")
+            except Exception as e:
+                print(f"  Error: {e}")
+
+        print(f"\nTotal created: {total} personas across {len(niches)} niches")
+
+    elif action == "photos":
+        limit = args.count
+        from sovi.persona import generate_photos_for_pending
+        print(f"Generating photos for up to {limit} personas...")
+        count = generate_photos_for_pending(limit=limit)
+        print(f"Generated photos for {count} personas")
+
+    elif action == "list":
+        conn = sync_conn()
+        with conn.cursor() as cur:
+            conditions = []
+            params: list = []
+            if hasattr(args, "niche") and args.niche:
+                conditions.append("n.slug = %s")
+                params.append(args.niche)
+            if hasattr(args, "status") and args.status:
+                conditions.append("p.status = %s")
+                params.append(args.status)
+
+            where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+
+            cur.execute(
+                f"""SELECT p.display_name, p.age, p.gender, p.occupation,
+                           p.status, p.photos_generated,
+                           n.slug as niche,
+                           (SELECT COUNT(*) FROM email_accounts ea WHERE ea.persona_id = p.id) as email_count,
+                           (SELECT COUNT(*) FROM accounts a WHERE a.persona_id = p.id AND a.deleted_at IS NULL) as account_count
+                    FROM personas p
+                    JOIN niches n ON p.niche_id = n.id
+                    {where}
+                    ORDER BY p.created_at DESC""",
+                tuple(params),
+            )
+            rows = cur.fetchall()
+
+            print(f"\n{'Name':<22} {'Age':>4} {'Gender':<8} {'Niche':<20} {'Email':>5} {'Accts':>5} {'Photos':>6} {'Status':<8}")
+            print("-" * 95)
+            for r in rows:
+                photos = "yes" if r["photos_generated"] else "no"
+                print(f"  {r['display_name']:<20} {r['age']:>4} {r['gender']:<8} {r['niche']:<20} {r['email_count']:>5} {r['account_count']:>5} {photos:>6} {r['status']:<8}")
+
+            print(f"\n  Total: {len(rows)} personas\n")
+        conn.close()
+
+    elif action == "pipeline":
+        conn = sync_conn()
+        with conn.cursor() as cur:
+            # Summary stats
+            cur.execute("SELECT COUNT(*) as cnt FROM personas")
+            total = cur.fetchone()["cnt"]
+
+            cur.execute("SELECT COUNT(*) as cnt FROM personas WHERE status = 'ready'")
+            ready = cur.fetchone()["cnt"]
+
+            cur.execute(
+                """SELECT COUNT(DISTINCT p.id) as cnt
+                   FROM personas p
+                   JOIN email_accounts ea ON ea.persona_id = p.id"""
+            )
+            with_email = cur.fetchone()["cnt"]
+
+            cur.execute("SELECT COUNT(*) as cnt FROM personas WHERE photos_generated = true")
+            with_photos = cur.fetchone()["cnt"]
+
+            cur.execute(
+                """SELECT a.platform, COUNT(*) as cnt
+                   FROM accounts a
+                   WHERE a.persona_id IS NOT NULL AND a.deleted_at IS NULL
+                   GROUP BY a.platform ORDER BY a.platform"""
+            )
+            platform_counts = cur.fetchall()
+
+            total_accounts = sum(p["cnt"] for p in platform_counts)
+
+            print(f"\n  Persona Pipeline Status")
+            print(f"  {'='*40}")
+            print(f"  Total personas:    {total}")
+            print(f"  Ready:             {ready}")
+            print(f"  With email:        {with_email}/{total}")
+            print(f"  With photos:       {with_photos}/{total}")
+            print(f"  Platform accounts: {total_accounts}/{total * 6}")
+            if platform_counts:
+                print(f"\n  By platform:")
+                for p in platform_counts:
+                    print(f"    {p['platform']:<18} {p['cnt']:>4}")
+
+            # Per-niche breakdown
+            cur.execute(
+                """SELECT n.slug, COUNT(p.id) as personas,
+                          COUNT(DISTINCT ea.id) as emails,
+                          COUNT(DISTINCT a.id) as accounts
+                   FROM niches n
+                   LEFT JOIN personas p ON p.niche_id = n.id
+                   LEFT JOIN email_accounts ea ON ea.persona_id = p.id
+                   LEFT JOIN accounts a ON a.persona_id = p.id AND a.deleted_at IS NULL
+                   WHERE n.status = 'active'
+                   GROUP BY n.slug
+                   ORDER BY n.slug"""
+            )
+            niche_rows = cur.fetchall()
+            if niche_rows:
+                print(f"\n  By niche:")
+                print(f"  {'Niche':<25} {'Personas':>8} {'Emails':>7} {'Accounts':>8}")
+                print(f"  {'-'*50}")
+                for r in niche_rows:
+                    print(f"    {r['slug']:<23} {r['personas']:>8} {r['emails']:>7} {r['accounts']:>8}")
+
+            print()
+        conn.close()
+
+
 def cmd_devices(args: argparse.Namespace) -> None:
     """Manage devices."""
     action = args.action
 
     if action == "list":
-        conn = psycopg.connect(DB_URL, row_factory=psycopg.rows.dict_row)
+        conn = sync_conn()
         with conn.cursor() as cur:
             cur.execute("SELECT * FROM devices ORDER BY name")
             rows = cur.fetchall()
@@ -359,8 +557,12 @@ def main() -> None:
     )
     sub = parser.add_subparsers(dest="command", help="Command to run")
 
-    # health
+    # health / status / db-check / niche-info
     sub.add_parser("health", help="System health check")
+    sub.add_parser("status", help="Show system status summary")
+    sub.add_parser("db-check", help="Verify database connectivity")
+    p_niche = sub.add_parser("niche-info", help="Show niche configuration")
+    p_niche.add_argument("--slug", required=True, help="Niche slug")
 
     # warm
     p_warm = sub.add_parser("warm", help="Run warming session")
@@ -410,6 +612,13 @@ def main() -> None:
     p_accts.add_argument("--status", help="Filter by state")
     p_accts.add_argument("--email", help="Email for account creation")
 
+    # personas
+    p_personas = sub.add_parser("personas", help="Manage personas")
+    p_personas.add_argument("action", choices=["generate", "generate-all", "photos", "list", "pipeline"])
+    p_personas.add_argument("--niche", help="Niche slug")
+    p_personas.add_argument("--count", type=int, default=10, help="Number to generate")
+    p_personas.add_argument("--status", help="Filter by status")
+
     # devices
     p_devs = sub.add_parser("devices", help="Manage devices")
     p_devs.add_argument("action", choices=["list", "add", "setup"])
@@ -426,6 +635,9 @@ def main() -> None:
 
     dispatch = {
         "health": cmd_health,
+        "status": cmd_status,
+        "db-check": cmd_db_check,
+        "niche-info": cmd_niche_info,
         "warm": cmd_warm,
         "produce": cmd_produce,
         "dry-run": cmd_dry_run,
@@ -434,6 +646,7 @@ def main() -> None:
         "server": cmd_server,
         "scheduler": cmd_scheduler,
         "accounts": cmd_accounts,
+        "personas": cmd_personas,
         "devices": cmd_devices,
     }
     dispatch[args.command](args)

@@ -1,0 +1,82 @@
+name: Fitness & Health
+slug: fitness
+tier: 2
+active: true
+
+voice_profile:
+  tone: energetic_supportive
+  vocabulary: accessible
+  persona: "Fitness coach who makes working out approachable for everyone"
+  elevenlabs_voice_id: null
+
+content_pillars:
+  - home_workouts
+  - gym_routines
+  - nutrition_basics
+  - weight_loss_tips
+  - muscle_building
+  - stretching_mobility
+  - workout_challenges
+
+formats:
+  primary: [faceless_narration, listicle]
+  secondary: [carousel, reddit_story]
+
+platforms:
+  tiktok:
+    hashtags: ["#fitness", "#gymtok", "#workout", "#fitnesstips", "#healthylifestyle"]
+    category: "Sports & Fitness"
+    post_frequency: 5_per_week
+    duration_target_s: 35
+  instagram:
+    hashtags: ["#fitnessmotivation", "#workoutideas", "#gymlife"]
+    category: "Health & Fitness"
+    post_frequency: 4_per_week
+    duration_target_s: 30
+  youtube:
+    hashtags: ["#Shorts", "#Fitness", "#Workout"]
+    category: "Sports"
+    post_frequency: 3_per_week
+    duration_target_s: 50
+  reddit:
+    subreddits:
+      - name: fitness
+        min_karma: 200
+        min_age_days: 30
+        post_frequency: 2_per_week
+        content_style: informative
+      - name: bodyweightfitness
+        min_karma: 100
+        min_age_days: 14
+        post_frequency: 1_per_week
+        content_style: instructional
+      - name: loseit
+        min_karma: 50
+        min_age_days: 14
+        post_frequency: 1_per_week
+        content_style: supportive
+  twitter:
+    hashtags: ["#FitnessTips", "#HealthyLiving"]
+    post_frequency: 7_per_week
+  facebook:
+    hashtags: ["#Fitness", "#Workout", "#HealthyLifestyle"]
+    category: "Health & Wellness"
+    post_frequency: 3_per_week
+  linkedin:
+    hashtags: ["#Wellness", "#HealthyHabits", "#Fitness"]
+    category: "Health, Wellness and Fitness"
+    post_frequency: 1_per_week
+
+hook_preferences:
+  categories: [bold_claim, numbers_data, problem_pain, direct_callout]
+  emotional_tone: [motivation, curiosity]
+
+competitors:
+  tiktok: []
+  instagram: []
+  youtube: []
+
+monetization:
+  affiliate_programs: [myprotein, amazon_associates, gymshark, onnit]
+  product_types: [workout_plans, meal_guides, coaching]
+  cpm_estimate: 10.0

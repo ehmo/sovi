@@ -282,23 +282,103 @@ class WDASession:
         """Press a hardware button: 'home', 'volumeUp', 'volumeDown'."""
         self.client.post(f"{self._s}/wda/pressButton", json={"name": name})
 
+    # --- Safari navigation ---
+
+    def navigate_to(self, url: str) -> None:
+        """Navigate current browser page to URL."""
+        try:
+            self.client.post(f"{self._s}/url", json={"url": url})
+        except (httpx.ReadTimeout, httpx.ConnectTimeout):
+            logger.warning("Timeout navigating to %s (may have succeeded)", url)
+
+    def open_safari(self, url: str) -> None:
+        """Launch Safari and navigate to URL."""
+        self.launch_app("com.apple.mobilesafari")
+        time.sleep(2)
+        self.navigate_to(url)
+
+    def close_safari(self) -> None:
+        """Close Safari cleanly."""
+        self.terminate_app("com.apple.mobilesafari")
+
+    # --- Airplane mode (IP rotation) ---
+
+    def toggle_airplane_mode(self, wait_after: float = 6.0) -> bool:
+        """Toggle airplane mode ON then OFF via Control Center to rotate cellular IP.
+
+        Swipes down from top-right to open Control Center, taps the airplane
+        mode icon, waits, then taps again to re-enable cellular.
+
+        Returns True if the toggle sequence completed without error.
+        """
+        size = self.screen_size()
+        w, h = size["width"], size["height"]
+
+        try:
+            # Open Control Center — swipe down from top-right corner
+            self.swipe(int(w * 0.9), 0, int(w * 0.5), int(h * 0.5), duration=0.3)
+            time.sleep(1.5)
+
+            # Airplane mode button is in the top-left connectivity group
+            # Tap it to enable (cuts cellular + wifi)
+            airplane_el = self.find_element("accessibility id", "airplane-mode-button")
+            if airplane_el:
+                self.element_click(airplane_el["ELEMENT"])
+            else:
+                # Fallback: tap the known coordinate area for airplane mode
+                # Control Center connectivity group top-left quadrant
+                self.tap(int(w * 0.18), int(h * 0.18))
+            time.sleep(3.0)
+
+            # Tap again to disable airplane mode (cellular reconnects)
+            airplane_el = self.find_element("accessibility id", "airplane-mode-button")
+            if airplane_el:
+                self.element_click(airplane_el["ELEMENT"])
+            else:
+                self.tap(int(w * 0.18), int(h * 0.18))
+
+            # Close Control Center — swipe up from bottom or tap empty area
+            time.sleep(0.5)
+            self.swipe(int(w * 0.5), int(h * 0.9), int(w * 0.5), int(h * 0.5), duration=0.3)
+            time.sleep(0.5)
+
+            # Wait for cellular to reconnect
+            time.sleep(wait_after)
+
+            logger.info("Airplane mode toggled on %s — IP rotated", self.device.name)
+            return True
+
+        except Exception:
+            logger.error("Failed to toggle airplane mode on %s", self.device.name, exc_info=True)
+            # Try to close Control Center and go home as recovery
+            try:
+                self.press_button("home")
+            except Exception:
+                pass
+            return False
+
+
+# --- Bundle IDs (canonical map — import from here) ---
+
+BUNDLE_IDS: dict[str, str] = {
+    "tiktok": "com.zhiliaoapp.musically",
+    "instagram": "com.burbn.instagram",
+    "youtube": "com.google.ios.youtube",
+    "youtube_shorts": "com.google.ios.youtube",
+    "reddit": "com.reddit.Reddit",
+    "twitter": "com.atebits.Tweetie2",
+    "x_twitter": "com.atebits.Tweetie2",
+    "facebook": "com.facebook.Facebook",
+    "linkedin": "com.linkedin.LinkedIn",
+    "safari": "com.apple.mobilesafari",
+}
+
 
 # --- High-level automation helpers ---
 
 
 class DeviceAutomation:
     """High-level automation actions using WDA directly."""
-
-    # Bundle IDs
-    APPS = {
-        "tiktok": "com.zhiliaoapp.musically",
-        "instagram": "com.burbn.instagram",
-        "youtube": "com.google.ios.youtube",
-        "youtube_shorts": "com.google.ios.youtube",  # DB platform_type alias
-        "reddit": "com.reddit.Reddit",
-        "twitter": "com.atebits.Tweetie2",
-        "x_twitter": "com.atebits.Tweetie2",  # DB platform_type alias
-    }
 
     def __init__(self, session: WDASession) -> None:
         self.wda = session
@@ -307,7 +387,7 @@ class DeviceAutomation:
         time.sleep(random.uniform(min_s, max_s))
 
     def launch(self, app_name: str) -> None:
-        bundle_id = self.APPS.get(app_name, app_name)
+        bundle_id = BUNDLE_IDS.get(app_name, app_name)
         self.wda.launch_app(bundle_id)
         time.sleep(random.uniform(2.5, 4.5))
         self.dismiss_popups()

@@ -1,0 +1,95 @@
+{% extends "base.html" %}
+{% block title %}SOVI — {{ persona.display_name }}{% endblock %}
+{% block content %}
+<h1>{{ persona.display_name }}</h1>
+<p class="text-dim">
+  {{ persona.age }} &middot; {{ persona.gender }} &middot; {{ persona.occupation or 'No occupation' }}
+  &middot; {{ persona.niche_name }}
+  &middot; <span class="badge badge-{% if persona.status == 'active' %}dim{% elif persona.status == 'ready' %}yellow{% else %}dim{% endif %}">{{ persona.status }}</span>
+</p>
+
+<div class="cards">
+  <div class="card">
+    <div class="label">Username Base</div>
+    <div class="value mono">{{ persona.username_base }}</div>
+  </div>
+  <div class="card">
+    <div class="label">Location</div>
+    <div class="value">{{ persona.city or '?' }}, {{ persona.state or '?' }}</div>
+  </div>
+  <div class="card">
+    <div class="label">DOB</div>
+    <div class="value mono">{{ persona.date_of_birth }}</div>
+  </div>
+  <div class="card">
+    <div class="label">Photos</div>
+    <div class="value">{{ persona.photos|length }} {% if persona.photos_generated %}<span class="text-dim text-sm">generated</span>{% endif %}</div>
+  </div>
+</div>
+
+<h2>Bio</h2>
+<p>{{ persona.bio_short }}</p>
+{% if persona.bio_long %}
+<p class="text-dim">{{ persona.bio_long }}</p>
+{% endif %}
+
+{% if persona.interests %}
+<h2>Interests</h2>
+<p>
+  {% for interest in persona.interests %}
+  <span class="badge badge-dim">{{ interest }}</span>
+  {% endfor %}
+</p>
+{% endif %}
+
+<h2>Email Accounts</h2>
+<table>
+  <thead><tr><th>Provider</th><th>Domain</th><th>Status</th><th>Created</th></tr></thead>
+  <tbody>
+    {% for email in persona.emails %}
+    <tr>
+      <td>{{ email.provider }}</td>
+      <td class="mono">{{ email.domain }}</td>
+      <td><span class="badge badge-{% if email.status == 'available' %}dim{% elif email.status == 'assigned' %}yellow{% else %}red{% endif %}">{{ email.status }}</span></td>
+      <td class="text-dim mono">{{ email.created_at.strftime('%m/%d %H:%M') if email.created_at else '?' }}</td>
+    </tr>
+    {% endfor %}
+    {% if not persona.emails %}
+    <tr><td colspan="4" class="text-dim">No email accounts yet</td></tr>
+    {% endif %}
+  </tbody>
+</table>
+
+<h2>Platform Accounts</h2>
+<table>
+  <thead><tr><th>Platform</th><th>Username</th><th>State</th><th>Day</th><th>Followers</th><th>Last Warmed</th></tr></thead>
+  <tbody>
+    {% for acct in persona.accounts %}
+    <tr>
+      <td>{{ acct.platform }}</td>
+      <td class="mono">{{ acct.username }}</td>
+      <td><span class="badge badge-{% if acct.current_state == 'active' %}dim{% elif 'warming' in acct.current_state %}yellow{% else %}dim{% endif %}">{{ acct.current_state }}</span></td>
+      <td>{{ acct.warming_day_count }}</td>
+      <td>{{ acct.followers }}</td>
+      <td class="text-dim mono">{{ acct.last_warmed_at.strftime('%m/%d %H:%M') if acct.last_warmed_at else '-' }}</td>
+    </tr>
+    {% endfor %}
+    {% if not persona.accounts %}
+    <tr><td colspan="6" class="text-dim">No platform accounts yet</td></tr>
+    {% endif %}
+  </tbody>
+</table>
+
+{% if persona.photos %}
+<h2>Photos</h2>
+<div class="photo-grid">
+  {% for photo in persona.photos %}
+  <div class="photo-card">
+    <div class="text-dim text-sm">{{ photo.photo_type }}{% if photo.is_primary %} (primary){% endif %}</div>
+  </div>
+  {% endfor %}
+</div>
+{% endif %}
+
+<p><a href="/personas">&larr; Back to personas</a></p>
+{% endblock %}

@@ -20,6 +20,14 @@
     <div class="label">Unresolved Errors</div>
     <div class="value {% if stats.error_count > 0 %}severity-error{% endif %}">{{ stats.error_count }}</div>
   </div>
+  <div class="card">
+    <div class="label">Personas</div>
+    <div class="value">{{ stats.total_personas }}</div>
+  </div>
+  <div class="card">
+    <div class="label">Pipeline</div>
+    <div class="value text-sm">{{ stats.personas_with_email }} email &middot; {{ stats.total_persona_accounts }} accts</div>
+  </div>
 </div>
 
 <h2>Scheduler</h2>

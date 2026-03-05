@@ -22,6 +22,12 @@ TEXTVERIFIED_BASE = "https://www.textverified.com/api"
 PLATFORM_SERVICES: dict[str, str] = {
     "tiktok": "TikTok",
     "instagram": "Instagram",
+    "google": "Google",
+    "youtube_shorts": "Google",
+    "reddit": "Reddit",
+    "facebook": "Facebook",
+    "linkedin": "LinkedIn",
+    "outlook": "Microsoft",
 }
 
 
