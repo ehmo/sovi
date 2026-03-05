@@ -1,14 +1,16 @@
 """Continuous device scheduler — 95% utilization, 24/7 operation.
 
 Architecture: one thread per device, each running an infinite loop:
-  1. get_next_task() → warm existing account OR create new one
+  1. get_next_task() → warm existing account OR create persona resources OR create new account
   2. Execute task (delete → install → login → warm 30 min → log)
   3. Emit events to system_events table
   4. Repeat
 
 Task priority:
   1. Warm existing account (not yet warmed today, earlier phases first)
-  2. Create new account (when no warming tasks remain)
+  2. Create platform accounts for personas with email but missing accounts
+  3. Create emails for personas without email
+  4. Create new account on platform/niche with fewest accounts (legacy fallback)
 """
 
 from __future__ import annotations
@@ -26,7 +28,8 @@ import psycopg
 from sovi import events
 from sovi.config import settings
 from sovi.crypto import decrypt
-from sovi.db import sync_conn
+from sovi.db import sync_conn, sync_execute, sync_execute_one
+from sovi.models import AccountState
 from sovi.device.app_lifecycle import BUNDLES, delete_app, install_from_app_store, login_account
 from sovi.device.device_registry import get_active_devices, set_device_status, to_wda_device, update_heartbeat
 from sovi.device.warming import WarmingConfig, WarmingPhase, run_warming
@@ -180,6 +183,10 @@ class DeviceScheduler:
                 # Execute task
                 if task["type"] == "warm":
                     self._execute_warming(device, dt, task)
+                elif task["type"] == "create_email":
+                    self._execute_email_creation(device, dt, task)
+                elif task["type"] == "create_persona_account":
+                    self._execute_persona_account_creation(device, dt, task)
                 elif task["type"] == "create":
                     self._execute_creation(device, dt, task)
 
@@ -209,55 +216,105 @@ class DeviceScheduler:
 
         Priority:
         1. Warm existing account not yet warmed today
-        2. Create new account on platform/niche with fewest accounts
+        2. Create platform accounts for personas with email but no account on some platform
+        3. Create emails for personas without email
+        4. Create new account on platform/niche with fewest accounts (legacy fallback)
         """
-        # Try to claim an account that needs warming
+        # Priority 1: Warm existing accounts
         try:
-            with sync_conn() as conn:
-                with conn.cursor() as cur:
-                    # Use FOR UPDATE SKIP LOCKED to avoid conflicts between device threads
-                    cur.execute(
-                        """SELECT a.id, a.platform, a.username, a.current_state,
-                                  a.warming_day_count, a.email_enc, a.password_enc,
-                                  a.totp_secret_enc, a.niche_id, n.slug as niche_slug
-                           FROM accounts a
-                           JOIN niches n ON a.niche_id = n.id
-                           WHERE a.current_state IN ('created', 'warming_p1', 'warming_p2', 'warming_p3', 'active')
-                             AND a.platform IN %s
-                             AND a.deleted_at IS NULL
-                             AND (a.last_warmed_at IS NULL
-                                  OR a.last_warmed_at < CURRENT_DATE)
-                           ORDER BY
-                             CASE a.current_state
-                               WHEN 'created' THEN 0
-                               WHEN 'warming_p1' THEN 1
-                               WHEN 'warming_p2' THEN 2
-                               WHEN 'warming_p3' THEN 3
-                               WHEN 'active' THEN 4
-                             END,
-                             a.last_warmed_at ASC NULLS FIRST
-                           LIMIT 1
-                           FOR UPDATE SKIP LOCKED""",
-                        (WARMABLE_PLATFORMS,),
-                    )
-                    row = cur.fetchone()
-                    conn.commit()
-
-                    if row:
-                        return {
-                            "type": "warm",
-                            "account": dict(zip(
-                                ["id", "platform", "username", "current_state",
-                                 "warming_day_count", "email_enc", "password_enc",
-                                 "totp_secret_enc", "niche_id", "niche_slug"],
-                                row,
-                            )),
-                        }
+            row = sync_execute_one(
+                """SELECT a.id, a.platform, a.username, a.current_state,
+                          a.warming_day_count, a.email_enc, a.password_enc,
+                          a.totp_secret_enc, a.niche_id, n.slug as niche_slug
+                   FROM accounts a
+                   JOIN niches n ON a.niche_id = n.id
+                   WHERE a.current_state IN %s
+                     AND a.platform IN %s
+                     AND a.deleted_at IS NULL
+                     AND (a.last_warmed_at IS NULL
+                          OR a.last_warmed_at < CURRENT_DATE)
+                   ORDER BY
+                     CASE a.current_state
+                       WHEN %s THEN 0
+                       WHEN %s THEN 1
+                       WHEN %s THEN 2
+                       WHEN %s THEN 3
+                       WHEN %s THEN 4
+                     END,
+                     a.last_warmed_at ASC NULLS FIRST
+                   LIMIT 1
+                   FOR UPDATE SKIP LOCKED""",
+                (
+                    (AccountState.CREATED, AccountState.WARMING_P1, AccountState.WARMING_P2,
+                     AccountState.WARMING_P3, AccountState.ACTIVE),
+                    WARMABLE_PLATFORMS,
+                    AccountState.CREATED, AccountState.WARMING_P1,
+                    AccountState.WARMING_P2, AccountState.WARMING_P3,
+                    AccountState.ACTIVE,
+                ),
+            )
+            if row:
+                return {
+                    "type": "warm",
+                    "account": dict(row),
+                }
         except Exception:
             logger.error("Error getting next warming task", exc_info=True)
 
-        # No warming tasks — create a new account
-        # Pick platform with fewest accounts, alternating tiktok/instagram
+        # Priority 2: Create platform accounts for personas that have email but missing accounts
+        try:
+            persona_task = sync_execute_one(
+                """SELECT p.id as persona_id, p.first_name, p.last_name, p.display_name,
+                          p.username_base, p.gender, p.date_of_birth, p.age,
+                          p.niche_id, p.bio_short, p.occupation, p.interests,
+                          plt.platform
+                   FROM personas p
+                   CROSS JOIN (VALUES ('tiktok'), ('instagram'), ('reddit'),
+                                      ('youtube_shorts'), ('facebook'), ('linkedin')) plt(platform)
+                   LEFT JOIN accounts a ON a.persona_id = p.id
+                        AND a.platform = plt.platform::platform_type
+                        AND a.deleted_at IS NULL
+                   JOIN email_accounts ea ON ea.persona_id = p.id AND ea.status IN ('available', 'assigned')
+                   WHERE p.status = 'ready' AND a.id IS NULL
+                   ORDER BY
+                       CASE plt.platform
+                           WHEN 'tiktok' THEN 0 WHEN 'instagram' THEN 1
+                           WHEN 'reddit' THEN 2 WHEN 'youtube_shorts' THEN 3
+                           WHEN 'facebook' THEN 4 WHEN 'linkedin' THEN 5
+                       END,
+                       p.created_at ASC
+                   LIMIT 1""",
+            )
+            if persona_task:
+                return {
+                    "type": "create_persona_account",
+                    "persona": dict(persona_task),
+                    "platform": persona_task["platform"],
+                }
+        except Exception:
+            logger.error("Error getting persona account creation task", exc_info=True)
+
+        # Priority 3: Create email for persona without one
+        try:
+            persona_needing_email = sync_execute_one(
+                """SELECT p.id, p.first_name, p.last_name, p.display_name,
+                          p.username_base, p.gender, p.date_of_birth, p.age,
+                          p.niche_id, p.bio_short, p.occupation
+                   FROM personas p
+                   LEFT JOIN email_accounts ea ON ea.persona_id = p.id
+                   WHERE p.status = 'ready' AND ea.id IS NULL
+                   ORDER BY p.created_at ASC
+                   LIMIT 1""",
+            )
+            if persona_needing_email:
+                return {
+                    "type": "create_email",
+                    "persona": dict(persona_needing_email),
+                }
+        except Exception:
+            logger.error("Error getting email creation task", exc_info=True)
+
+        # Priority 4 (legacy fallback): Create a new account
         try:
             with sync_conn() as conn:
                 with conn.cursor() as cur:
@@ -271,7 +328,6 @@ class DeviceScheduler:
                     counts = {row[0]: row[1] for row in cur.fetchall()}
                     conn.commit()
 
-            # Pick platform with fewer accounts
             tt_count = counts.get("tiktok", 0)
             ig_count = counts.get("instagram", 0)
             platform = "tiktok" if tt_count <= ig_count else "instagram"
@@ -303,11 +359,11 @@ class DeviceScheduler:
         # Determine warming phase from account state
         state = account["current_state"]
         phase_map = {
-            "created": WarmingPhase.PASSIVE,
-            "warming_p1": WarmingPhase.PASSIVE,
-            "warming_p2": WarmingPhase.LIGHT,
-            "warming_p3": WarmingPhase.MODERATE,
-            "active": WarmingPhase.LIGHT,
+            AccountState.CREATED: WarmingPhase.PASSIVE,
+            AccountState.WARMING_P1: WarmingPhase.PASSIVE,
+            AccountState.WARMING_P2: WarmingPhase.LIGHT,
+            AccountState.WARMING_P3: WarmingPhase.MODERATE,
+            AccountState.ACTIVE: WarmingPhase.LIGHT,
         }
         phase = phase_map.get(state, WarmingPhase.PASSIVE)
 
@@ -322,6 +378,15 @@ class DeviceScheduler:
         session = WDASession(device)
         try:
             session.connect()
+
+            # Step 0: Rotate IP via airplane mode toggle
+            dt.current_task = f"rotating_ip:{device.name}"
+            if not session.toggle_airplane_mode():
+                logger.warning("Airplane mode toggle failed on %s, continuing anyway", device.name)
+                events.emit("device", "warning", "ip_rotation_failed",
+                           f"Airplane mode toggle failed on {device.name}",
+                           device_id=device_id,
+                           context={"device_name": device.name})
 
             # Step 1: Delete app for IDFV isolation
             dt.current_task = f"deleting:{platform}"
@@ -364,15 +429,14 @@ class DeviceScheduler:
             new_day_count = account["warming_day_count"] + 1
             # Phase transitions based on warming days
             if new_day_count <= 3:
-                new_state = "warming_p1"
+                new_state = AccountState.WARMING_P1
             elif new_day_count <= 7:
-                new_state = "warming_p2"
+                new_state = AccountState.WARMING_P2
             elif new_day_count <= 14:
-                new_state = "warming_p3"
+                new_state = AccountState.WARMING_P3
             else:
-                new_state = "active"
+                new_state = AccountState.ACTIVE
 
-            from sovi.db import sync_execute
             sync_execute(
                 """UPDATE accounts
                    SET last_warmed_at = now(),
@@ -405,10 +469,119 @@ class DeviceScheduler:
                        device_id=device_id, account_id=account_id,
                        context={"platform": platform, "username": username})
         finally:
-            try:
-                session.press_button("home")
-            except Exception:
-                pass
+            self._reset_device(session)
+            session.disconnect()
+            dt.current_account = None
+            time.sleep(2)
+
+    def _execute_email_creation(
+        self,
+        device: WDADevice,
+        dt: DeviceThread,
+        task: dict[str, Any],
+    ) -> None:
+        """Execute an email creation task for a persona."""
+        persona = task["persona"]
+        persona_name = persona.get("display_name", "?")
+        device_id = dt.device_id
+        dt.current_task = f"creating_email:{persona_name}"
+
+        events.emit("scheduler", "info", "email_creation_started",
+                    f"Creating email for persona {persona_name} on {device.name}",
+                    device_id=device_id,
+                    context={"persona_id": str(persona["id"])})
+
+        session = WDASession(device)
+        try:
+            session.connect()
+
+            from sovi.persona.email_creator import create_email_for_persona
+            result = create_email_for_persona(
+                session, persona, provider="outlook", device_id=device_id,
+            )
+
+            if result:
+                events.emit("scheduler", "info", "email_creation_complete",
+                            f"Created email for {persona_name}",
+                            device_id=device_id,
+                            context={"persona_id": str(persona["id"]),
+                                     "email_account_id": str(result["id"])})
+            else:
+                events.emit("scheduler", "error", "email_creation_failed",
+                            f"Failed to create email for {persona_name}",
+                            device_id=device_id,
+                            context={"persona_id": str(persona["id"])})
+        except Exception:
+            logger.error("Email creation failed for %s on %s",
+                         persona_name, device.name, exc_info=True)
+            events.emit("scheduler", "error", "email_creation_error",
+                        f"Email creation exception for {persona_name}",
+                        device_id=device_id,
+                        context={"persona_id": str(persona["id"])})
+        finally:
+            self._reset_device(session)
+            session.disconnect()
+            dt.current_account = None
+            time.sleep(2)
+
+    def _execute_persona_account_creation(
+        self,
+        device: WDADevice,
+        dt: DeviceThread,
+        task: dict[str, Any],
+    ) -> None:
+        """Execute a platform account creation task for a persona."""
+        persona = task["persona"]
+        platform = task["platform"]
+        persona_name = persona.get("display_name", "?")
+        device_id = dt.device_id
+        dt.current_task = f"creating_account:{platform}/{persona_name}"
+
+        events.emit("scheduler", "info", "persona_account_creation_started",
+                    f"Creating {platform} account for {persona_name} on {device.name}",
+                    device_id=device_id,
+                    context={"persona_id": str(persona["persona_id"]),
+                             "platform": platform})
+
+        session = WDASession(device)
+        try:
+            session.connect()
+
+            from sovi.persona.account_creator import create_account_for_persona
+            # Build persona dict with expected keys
+            persona_data = {
+                "id": persona["persona_id"],
+                "niche_id": persona["niche_id"],
+                "first_name": persona["first_name"],
+                "last_name": persona["last_name"],
+                "display_name": persona["display_name"],
+                "username_base": persona["username_base"],
+                "gender": persona["gender"],
+                "date_of_birth": str(persona["date_of_birth"]),
+                "age": persona["age"],
+            }
+            result = create_account_for_persona(
+                session, persona_data, platform, device_id=device_id,
+            )
+
+            if result:
+                events.emit("scheduler", "info", "persona_account_created",
+                            f"Created {platform} account for {persona_name}: {result.get('username', '?')}",
+                            device_id=device_id,
+                            context={"persona_id": str(persona["persona_id"]),
+                                     "platform": platform,
+                                     "username": result.get("username")})
+            else:
+                events.emit("scheduler", "error", "persona_account_creation_failed",
+                            f"Failed to create {platform} account for {persona_name}",
+                            device_id=device_id,
+                            context={"persona_id": str(persona["persona_id"]),
+                                     "platform": platform})
+        except Exception:
+            logger.error("Persona account creation failed for %s/%s on %s",
+                         platform, persona_name, device.name, exc_info=True)
+        finally:
+            self._reset_device(session)
             session.disconnect()
             dt.current_account = None
             time.sleep(2)
@@ -419,7 +592,7 @@ class DeviceScheduler:
         dt: DeviceThread,
         task: dict[str, Any],
     ) -> None:
-        """Execute an account creation task."""
+        """Execute a legacy account creation task (non-persona)."""
         platform = task["platform"]
         device_id = dt.device_id
         dt.current_task = f"creating:{platform}"
@@ -429,12 +602,32 @@ class DeviceScheduler:
                     device_id=device_id,
                     context={"platform": platform})
 
-        # TODO: integrate with email provider to generate disposable email
-        # For now, log that creation is needed and skip
+        # Legacy creation requires persona pipeline — skip if no personas
         events.emit("scheduler", "warning", "creation_skipped",
-                    f"Account creation for {platform} requires email provider integration",
+                    f"Account creation for {platform}: use persona pipeline instead",
                     device_id=device_id,
-                    context={"platform": platform, "reason": "email_provider_not_configured"})
+                    context={"platform": platform, "reason": "use_persona_pipeline"})
+
+    @staticmethod
+    def _reset_device(session: WDASession) -> None:
+        """Return device to a clean home screen state after a task.
+
+        Terminates common apps that may have been left open (App Store,
+        Safari, social apps) and presses Home twice to ensure we're on
+        the springboard. Swallows all errors — this is best-effort recovery.
+        """
+        for bundle in ("com.apple.AppStore", "com.apple.mobilesafari",
+                        "com.zhiliaoapp.musically", "com.burbn.instagram"):
+            try:
+                session.terminate_app(bundle)
+            except Exception:
+                pass
+        try:
+            session.press_button("home")
+            time.sleep(0.5)
+            session.press_button("home")
+        except Exception:
+            pass
 
     @staticmethod
     def _wait_for_wda(device: WDADevice, timeout: float = 30.0) -> bool:

@@ -28,13 +28,12 @@ class WarmingPhase(IntEnum):
     ACTIVE = 4
 
 
-# ---------- TikTok Warming ----------
+class BaseWarmer:
+    """Shared warmer pattern — open app, dismiss alerts, watch/scroll loop."""
 
-
-class TikTokWarmer:
-    """TikTok account warming."""
-
-    BUNDLE = "com.zhiliaoapp.musically"
+    BUNDLE: str = ""
+    PLATFORM_NAME: str = ""
+    OPEN_DELAY: tuple[float, float] = (2.0, 4.0)
 
     def __init__(self, wda: WDASession, auto: DeviceAutomation) -> None:
         self.wda = wda
@@ -42,17 +41,38 @@ class TikTokWarmer:
 
     def _open(self) -> None:
         self.wda.launch_app(self.BUNDLE)
-        time.sleep(random.uniform(3.0, 5.0))
-        # Light popup dismiss — only check alerts, skip heavy element search
+        time.sleep(random.uniform(*self.OPEN_DELAY))
         self._dismiss_alerts()
 
     def _dismiss_alerts(self) -> None:
-        """Lightweight alert dismissal — no element search (TikTok UI is too heavy)."""
+        """Lightweight alert dismissal — no element search."""
         alert_text = self.wda.get_alert_text()
         if alert_text:
-            logger.info("TikTok alert: %s", str(alert_text)[:80])
+            logger.info("%s alert: %s", self.PLATFORM_NAME, str(alert_text)[:80])
             self.wda.dismiss_alert()
             time.sleep(0.5)
+
+    def _periodic_alert_check(self, counter: int, interval: int = 5) -> None:
+        """Dismiss alerts every N items."""
+        if counter % interval == 0:
+            self._dismiss_alerts()
+
+    def passive_consumption(self, duration_min: int = 20) -> dict:
+        raise NotImplementedError
+
+    def light_engagement(self, duration_min: int = 20) -> dict:
+        raise NotImplementedError
+
+
+# ---------- TikTok Warming ----------
+
+
+class TikTokWarmer(BaseWarmer):
+    """TikTok account warming."""
+
+    BUNDLE = "com.zhiliaoapp.musically"
+    PLATFORM_NAME = "TikTok"
+    OPEN_DELAY = (3.0, 5.0)
 
     def passive_consumption(self, duration_min: int = 30) -> dict:
         """Phase 1: Watch FYP content passively. Zero interactions."""
@@ -64,24 +84,18 @@ class TikTokWarmer:
         end_time = start + duration_min * 60
 
         while time.time() < end_time:
-            # Watch current video for variable duration
             if random.random() < 0.3:
-                watch_time = random.uniform(20, 60)  # Watch to completion
+                watch_time = random.uniform(20, 60)
             else:
-                watch_time = random.uniform(5, 25)  # Partial watch
+                watch_time = random.uniform(5, 25)
 
             time.sleep(watch_time)
             videos_watched += 1
+            self._periodic_alert_check(videos_watched)
 
-            # Lightweight alert check every ~5 videos (avoid heavy element search)
-            if videos_watched % 5 == 0:
-                self._dismiss_alerts()
-
-            # Swipe to next
             self.wda.swipe_up(duration=random.uniform(0.3, 0.6))
             time.sleep(random.uniform(0.5, 1.5))
 
-            # Occasional pause (simulate reading comments or zoning out)
             if random.random() < 0.08:
                 time.sleep(random.uniform(5, 15))
 
@@ -103,29 +117,23 @@ class TikTokWarmer:
         end_time = start + duration_min * 60
 
         while time.time() < end_time:
-            # Watch video
             watch_time = random.uniform(8, 40)
             time.sleep(watch_time)
             videos_watched += 1
+            self._periodic_alert_check(videos_watched)
 
-            if videos_watched % 5 == 0:
-                self._dismiss_alerts()
-
-            # Like (double-tap center) with rate limit
             if likes < max_likes and random.random() < 0.15:
                 self.auto.like_current()
                 likes += 1
                 logger.debug("Liked video #%d", videos_watched)
-                time.sleep(random.uniform(30, 90))  # Min gap between likes
+                time.sleep(random.uniform(30, 90))
 
-            # Follow (tap + button on profile)
             if follows < max_follows and random.random() < 0.06:
                 if self.auto.tap_element("accessibility id", "Follow"):
                     follows += 1
                     logger.debug("Followed creator")
                     time.sleep(random.uniform(30, 60))
 
-            # Next video
             self.wda.swipe_up(duration=random.uniform(0.3, 0.6))
             time.sleep(random.uniform(0.5, 2.0))
 
@@ -194,27 +202,11 @@ class TikTokWarmer:
 # ---------- Instagram Warming ----------
 
 
-class InstagramWarmer:
+class InstagramWarmer(BaseWarmer):
     """Instagram account warming."""
 
     BUNDLE = "com.burbn.instagram"
-
-    def __init__(self, wda: WDASession, auto: DeviceAutomation) -> None:
-        self.wda = wda
-        self.auto = auto
-
-    def _open(self) -> None:
-        self.wda.launch_app(self.BUNDLE)
-        time.sleep(random.uniform(2.0, 4.0))
-        self._dismiss_alerts()
-
-    def _dismiss_alerts(self) -> None:
-        """Lightweight alert dismissal — no element search."""
-        alert_text = self.wda.get_alert_text()
-        if alert_text:
-            logger.info("Instagram alert: %s", str(alert_text)[:80])
-            self.wda.dismiss_alert()
-            time.sleep(0.5)
+    PLATFORM_NAME = "Instagram"
 
     def passive_consumption(self, duration_min: int = 20) -> dict:
         """Phase 1: Browse feed and Reels passively."""
@@ -233,8 +225,7 @@ class InstagramWarmer:
             self.wda.swipe_up(duration=random.uniform(0.5, 0.9))
             posts_viewed += 1
 
-            if posts_viewed % 5 == 0:
-                self._dismiss_alerts()
+            self._periodic_alert_check(posts_viewed)
 
         # Switch to Reels — use direct WDA to avoid heavy element search
         reels_el = self.wda.find_element("accessibility id", "Reels")
@@ -252,8 +243,7 @@ class InstagramWarmer:
                 time.sleep(random.uniform(5, 25))
             reels_watched += 1
 
-            if reels_watched % 5 == 0:
-                self._dismiss_alerts()
+            self._periodic_alert_check(reels_watched)
 
             self.wda.swipe_up(duration=random.uniform(0.3, 0.6))
             time.sleep(random.uniform(0.5, 1.5))
@@ -282,8 +272,7 @@ class InstagramWarmer:
         while time.time() < end_time:
             time.sleep(random.uniform(5, 15))
 
-            if likes % 5 == 0:
-                self._dismiss_alerts()
+            self._periodic_alert_check(likes)
 
             if likes < max_likes and random.random() < 0.12:
                 self.auto.like_current()
@@ -313,27 +302,11 @@ class InstagramWarmer:
 # ---------- Reddit Warming ----------
 
 
-class RedditWarmer:
+class RedditWarmer(BaseWarmer):
     """Reddit account warming via on-device browsing."""
 
     BUNDLE = "com.reddit.Reddit"
-
-    def __init__(self, wda: WDASession, auto: DeviceAutomation) -> None:
-        self.wda = wda
-        self.auto = auto
-
-    def _open(self) -> None:
-        self.wda.launch_app(self.BUNDLE)
-        time.sleep(random.uniform(2.0, 4.0))
-        self._dismiss_alerts()
-
-    def _dismiss_alerts(self) -> None:
-        """Lightweight alert dismissal — no element search."""
-        alert_text = self.wda.get_alert_text()
-        if alert_text:
-            logger.info("Reddit alert: %s", str(alert_text)[:80])
-            self.wda.dismiss_alert()
-            time.sleep(0.5)
+    PLATFORM_NAME = "Reddit"
 
     def passive_consumption(self, duration_min: int = 20) -> dict:
         """Browse home feed, read posts, scroll through content."""
@@ -350,8 +323,7 @@ class RedditWarmer:
             time.sleep(read_time)
             posts_viewed += 1
 
-            if posts_viewed % 8 == 0:
-                self._dismiss_alerts()
+            self._periodic_alert_check(posts_viewed, interval=8)
 
             # Scroll to next post
             self.wda.swipe_up(duration=random.uniform(0.4, 0.8))
@@ -398,8 +370,7 @@ class RedditWarmer:
             time.sleep(random.uniform(3, 12))
             posts_viewed += 1
 
-            if posts_viewed % 8 == 0:
-                self._dismiss_alerts()
+            self._periodic_alert_check(posts_viewed, interval=8)
 
             # Upvote (tap the upvote button)
             if upvotes < max_upvotes and random.random() < 0.12:
@@ -432,26 +403,12 @@ class RedditWarmer:
 # ---------- YouTube Warming ----------
 
 
-class YouTubeWarmer:
+class YouTubeWarmer(BaseWarmer):
     """YouTube account warming — Shorts + Home feed."""
 
     BUNDLE = "com.google.ios.youtube"
-
-    def __init__(self, wda: WDASession, auto: DeviceAutomation) -> None:
-        self.wda = wda
-        self.auto = auto
-
-    def _open(self) -> None:
-        self.wda.launch_app(self.BUNDLE)
-        time.sleep(random.uniform(3.0, 5.0))
-        self._dismiss_alerts()
-
-    def _dismiss_alerts(self) -> None:
-        alert_text = self.wda.get_alert_text()
-        if alert_text:
-            logger.info("YouTube alert: %s", str(alert_text)[:80])
-            self.wda.dismiss_alert()
-            time.sleep(0.5)
+    PLATFORM_NAME = "YouTube"
+    OPEN_DELAY = (3.0, 5.0)
 
     def passive_consumption(self, duration_min: int = 30) -> dict:
         """Browse Home feed + watch Shorts passively."""
@@ -470,8 +427,7 @@ class YouTubeWarmer:
             self.wda.swipe_up(duration=random.uniform(0.5, 0.9))
             videos_watched += 1
 
-            if videos_watched % 5 == 0:
-                self._dismiss_alerts()
+            self._periodic_alert_check(videos_watched)
 
             # Occasionally tap a video thumbnail and watch
             if random.random() < 0.15:
@@ -503,8 +459,7 @@ class YouTubeWarmer:
             time.sleep(watch_time)
             shorts_watched += 1
 
-            if shorts_watched % 5 == 0:
-                self._dismiss_alerts()
+            self._periodic_alert_check(shorts_watched)
 
             self.wda.swipe_up(duration=random.uniform(0.3, 0.6))
             time.sleep(random.uniform(0.5, 1.5))
@@ -543,8 +498,7 @@ class YouTubeWarmer:
             time.sleep(watch_time)
             shorts_watched += 1
 
-            if shorts_watched % 5 == 0:
-                self._dismiss_alerts()
+            self._periodic_alert_check(shorts_watched)
 
             # Like (tap like button on right side of Shorts)
             if likes < max_likes and random.random() < 0.12:
@@ -573,26 +527,11 @@ class YouTubeWarmer:
 # ---------- X/Twitter Warming ----------
 
 
-class XTwitterWarmer:
+class XTwitterWarmer(BaseWarmer):
     """X/Twitter account warming — timeline browsing."""
 
     BUNDLE = "com.atebits.Tweetie2"
-
-    def __init__(self, wda: WDASession, auto: DeviceAutomation) -> None:
-        self.wda = wda
-        self.auto = auto
-
-    def _open(self) -> None:
-        self.wda.launch_app(self.BUNDLE)
-        time.sleep(random.uniform(2.0, 4.0))
-        self._dismiss_alerts()
-
-    def _dismiss_alerts(self) -> None:
-        alert_text = self.wda.get_alert_text()
-        if alert_text:
-            logger.info("X/Twitter alert: %s", str(alert_text)[:80])
-            self.wda.dismiss_alert()
-            time.sleep(0.5)
+    PLATFORM_NAME = "X/Twitter"
 
     def passive_consumption(self, duration_min: int = 20) -> dict:
         """Browse timeline, read tweets/threads, watch embedded videos."""
@@ -609,8 +548,7 @@ class XTwitterWarmer:
             time.sleep(read_time)
             tweets_viewed += 1
 
-            if tweets_viewed % 8 == 0:
-                self._dismiss_alerts()
+            self._periodic_alert_check(tweets_viewed, interval=8)
 
             # Scroll to next tweets
             self.wda.swipe_up(duration=random.uniform(0.4, 0.8))
@@ -656,8 +594,7 @@ class XTwitterWarmer:
             time.sleep(random.uniform(3, 10))
             tweets_viewed += 1
 
-            if tweets_viewed % 8 == 0:
-                self._dismiss_alerts()
+            self._periodic_alert_check(tweets_viewed, interval=8)
 
             # Like (heart button)
             if likes < max_likes and random.random() < 0.10:
@@ -698,46 +635,28 @@ class WarmingConfig:
     duration_min: int = 30
 
 
+PLATFORM_WARMERS: dict[str, type[BaseWarmer]] = {
+    "tiktok": TikTokWarmer,
+    "instagram": InstagramWarmer,
+    "reddit": RedditWarmer,
+    "youtube": YouTubeWarmer,
+    "twitter": XTwitterWarmer,
+    "x_twitter": XTwitterWarmer,
+}
+
+
 def run_warming(wda: WDASession, config: WarmingConfig) -> dict:
     """Execute a warming session."""
-    auto = DeviceAutomation(wda)
-
     logger.info("Warming: %s %s phase=%d on %s", config.platform, config.device_name, config.phase, wda.device.name)
 
-    if config.platform == "tiktok":
-        warmer = TikTokWarmer(wda, auto)
-        if config.phase == WarmingPhase.PASSIVE:
-            return warmer.passive_consumption(config.duration_min)
-        else:
-            return warmer.light_engagement(config.duration_min)
-
-    elif config.platform == "instagram":
-        warmer = InstagramWarmer(wda, auto)
-        if config.phase == WarmingPhase.PASSIVE:
-            return warmer.passive_consumption(config.duration_min)
-        else:
-            return warmer.light_engagement(config.duration_min)
-
-    elif config.platform == "reddit":
-        warmer = RedditWarmer(wda, auto)
-        if config.phase == WarmingPhase.PASSIVE:
-            return warmer.passive_consumption(config.duration_min)
-        else:
-            return warmer.light_engagement(config.duration_min)
-
-    elif config.platform == "youtube":
-        warmer = YouTubeWarmer(wda, auto)
-        if config.phase == WarmingPhase.PASSIVE:
-            return warmer.passive_consumption(config.duration_min)
-        else:
-            return warmer.light_engagement(config.duration_min)
-
-    elif config.platform in ("twitter", "x_twitter"):
-        warmer = XTwitterWarmer(wda, auto)
-        if config.phase == WarmingPhase.PASSIVE:
-            return warmer.passive_consumption(config.duration_min)
-        else:
-            return warmer.light_engagement(config.duration_min)
-
-    else:
+    warmer_cls = PLATFORM_WARMERS.get(config.platform)
+    if warmer_cls is None:
         return {"error": f"Unsupported platform: {config.platform}"}
+
+    auto = DeviceAutomation(wda)
+    warmer = warmer_cls(wda, auto)
+
+    if config.phase == WarmingPhase.PASSIVE:
+        return warmer.passive_consumption(config.duration_min)
+    else:
+        return warmer.light_engagement(config.duration_min)
