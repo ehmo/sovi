@@ -51,3 +51,4 @@ logs/
 postgres_data/
 redis_data/
 temporal_data/
+.claude/
