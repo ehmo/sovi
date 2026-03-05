@@ -148,6 +148,17 @@ def create_account(
 
     account = rows[0]
 
+    # Create device-account binding for identity isolation
+    if device_id:
+        try:
+            sync_execute(
+                "SELECT bind_account_to_device(%s, %s, 'initial')",
+                (str(account["id"]), device_id),
+            )
+        except Exception:
+            logger.warning("Failed to create device binding for account %s", account["id"],
+                          exc_info=True)
+
     events.emit("account", "info", "account_created",
                 f"Created {platform} account: {username}",
                 device_id=device_id, account_id=account["id"],

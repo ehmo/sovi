@@ -85,6 +85,12 @@ class Settings(BaseSettings):
     max_concurrent_productions: int = 10
     daily_video_target: int = 10
 
+    # Identity guard
+    identity_guard_enabled: bool = True
+    min_cooldown_seconds: int = 300   # 5 min
+    max_cooldown_seconds: int = 900   # 15 min
+    max_sessions_per_device_day: int = 24
+
     # Paths
     output_dir: Path = Field(default_factory=lambda: PROJECT_ROOT / "output")
     temp_dir: Path = Field(default_factory=lambda: PROJECT_ROOT / "temp")

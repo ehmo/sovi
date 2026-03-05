@@ -16,6 +16,7 @@ Task priority:
 from __future__ import annotations
 
 import logging
+import random
 import threading
 import time
 from dataclasses import dataclass, field
@@ -30,8 +31,15 @@ from sovi.config import settings
 from sovi.crypto import decrypt
 from sovi.db import sync_conn, sync_execute, sync_execute_one
 from sovi.models import AccountState
-from sovi.device.app_lifecycle import BUNDLES, delete_app, install_from_app_store, login_account
+from sovi.device.app_lifecycle import BUNDLES, delete_app, install_from_app_store, login_account, reset_idfa
 from sovi.device.device_registry import get_active_devices, set_device_status, to_wda_device, update_heartbeat
+from sovi.device.identity_guard import (
+    PreSessionReport,
+    end_session,
+    run_pre_session_checks,
+    start_session,
+)
+from sovi.device.proxy_client import get_device_proxy
 from sovi.device.warming import WarmingConfig, WarmingPhase, run_warming
 from sovi.device.wda_client import WDADevice, WDASession
 
@@ -40,8 +48,6 @@ logger = logging.getLogger(__name__)
 # Session timing constants
 WARMING_DURATION_MIN = 30
 OVERHEAD_MIN = 15  # delete + install + login + cooldown
-SESSION_TOTAL_MIN = WARMING_DURATION_MIN + OVERHEAD_MIN  # 45 min
-SESSIONS_PER_DAY = int(24 * 60 / SESSION_TOTAL_MIN)  # 32
 
 # Platforms we warm (TikTok + Instagram only to start)
 WARMABLE_PLATFORMS = ("tiktok", "instagram")
@@ -140,7 +146,7 @@ class DeviceScheduler:
             "running": self.is_running,
             "device_count": len(self._threads),
             "threads": thread_status,
-            "sessions_per_day_target": SESSIONS_PER_DAY,
+            "sessions_per_day_target": settings.max_sessions_per_device_day,
         }
 
     def _device_loop(self, device_row: dict[str, Any], dt: DeviceThread) -> None:
@@ -166,36 +172,67 @@ class DeviceScheduler:
                                device_id=device_id,
                                context={"device_name": device.name, "wda_port": device.wda_port})
                     set_device_status(device_id, "disconnected")
-                    # Backoff and retry
                     self._stop_event.wait(60)
                     continue
 
-                # Get next task
+                # Get next task (device-affinity aware)
                 dt.current_task = "selecting_task"
                 task = self._get_next_task(device_id)
 
                 if task is None:
-                    # Nothing to do — short sleep and retry
                     dt.current_task = "idle"
                     self._stop_event.wait(30)
                     continue
 
-                # Execute task
+                # Pre-session identity checks
+                account_id = None
                 if task["type"] == "warm":
-                    self._execute_warming(device, dt, task)
-                elif task["type"] == "create_email":
-                    self._execute_email_creation(device, dt, task)
-                elif task["type"] == "create_persona_account":
-                    self._execute_persona_account_creation(device, dt, task)
+                    account_id = str(task["account"]["id"])
+
+                dt.current_task = "identity_checks"
+                report = run_pre_session_checks(device_id, account_id)
+
+                if not report.passed:
+                    wait = max(report.wait_seconds, 30)
+                    dt.current_task = f"cooldown:{wait:.0f}s"
+                    logger.info("Pre-session rejected for %s, waiting %.0fs", device.name, wait)
+                    self._stop_event.wait(wait)
+                    continue
+
+                # Resolve proxy for session log
+                proxy = get_device_proxy(device_id)
+                proxy_id = str(proxy["id"]) if proxy else None
+
+                # Start session log
+                session_type = "warming" if task["type"] == "warm" else "creation"
+                session_id = start_session(
+                    device_id, account_id, session_type,
+                    proxy_id=proxy_id,
+                    identity_checks=report.to_dict(),
+                )
+
+                # Execute task
+                outcome = "failed"
+                if task["type"] == "warm":
+                    outcome = "success" if self._execute_warming(device, dt, task) else "failed"
                 elif task["type"] == "create":
-                    self._execute_creation(device, dt, task)
+                    outcome = "success" if self._execute_creation(device, dt, task) else "failed"
+
+                # End session log
+                if session_id:
+                    end_session(session_id, outcome)
 
                 dt.sessions_today += 1
                 dt.last_session_at = datetime.now(timezone.utc)
 
-                # Brief cooldown between sessions
+                # Randomized cooldown: uniform(5, 15) min + jitter(±2 min)
                 dt.current_task = "cooldown"
-                self._stop_event.wait(30)
+                cooldown = random.uniform(
+                    settings.min_cooldown_seconds,
+                    settings.max_cooldown_seconds,
+                ) + random.uniform(-120, 120)
+                cooldown = max(cooldown, 60)  # floor at 1 min
+                self._stop_event.wait(cooldown)
 
             except Exception:
                 dt.error = "Unhandled exception in device loop"
@@ -204,7 +241,6 @@ class DeviceScheduler:
                            f"Unhandled error in {device.name} loop",
                            device_id=device_id,
                            context={"device_name": device.name})
-                # Backoff on error
                 self._stop_event.wait(60)
 
         dt.running = False
@@ -215,49 +251,64 @@ class DeviceScheduler:
         """Determine the next task for a device.
 
         Priority:
-        1. Warm existing account not yet warmed today
-        2. Create platform accounts for personas with email but no account on some platform
-        3. Create emails for personas without email
-        4. Create new account on platform/niche with fewest accounts (legacy fallback)
+        1. Warm existing account bound to this device (not yet warmed today)
+        2. Create new account on platform/niche with fewest accounts
         """
-        # Priority 1: Warm existing accounts
+        # Try to claim an account that needs warming — only accounts bound to this device
         try:
-            row = sync_execute_one(
-                """SELECT a.id, a.platform, a.username, a.current_state,
-                          a.warming_day_count, a.email_enc, a.password_enc,
-                          a.totp_secret_enc, a.niche_id, n.slug as niche_slug
-                   FROM accounts a
-                   JOIN niches n ON a.niche_id = n.id
-                   WHERE a.current_state IN %s
-                     AND a.platform IN %s
-                     AND a.deleted_at IS NULL
-                     AND (a.last_warmed_at IS NULL
-                          OR a.last_warmed_at < CURRENT_DATE)
-                   ORDER BY
-                     CASE a.current_state
-                       WHEN %s THEN 0
-                       WHEN %s THEN 1
-                       WHEN %s THEN 2
-                       WHEN %s THEN 3
-                       WHEN %s THEN 4
-                     END,
-                     a.last_warmed_at ASC NULLS FIRST
-                   LIMIT 1
-                   FOR UPDATE SKIP LOCKED""",
-                (
-                    (AccountState.CREATED, AccountState.WARMING_P1, AccountState.WARMING_P2,
-                     AccountState.WARMING_P3, AccountState.ACTIVE),
-                    WARMABLE_PLATFORMS,
-                    AccountState.CREATED, AccountState.WARMING_P1,
-                    AccountState.WARMING_P2, AccountState.WARMING_P3,
-                    AccountState.ACTIVE,
-                ),
-            )
-            if row:
-                return {
-                    "type": "warm",
-                    "account": dict(row),
-                }
+            with sync_conn() as conn:
+                with conn.cursor() as cur:
+                    # Use FOR UPDATE SKIP LOCKED to avoid conflicts between device threads
+                    # JOIN device_account_bindings to enforce device affinity
+                    cur.execute(
+                        """SELECT a.id, a.platform, a.username, a.current_state,
+                                  a.warming_day_count, a.email_enc, a.password_enc,
+                                  a.totp_secret_enc, a.niche_id, n.slug as niche_slug
+                           FROM accounts a
+                           JOIN niches n ON a.niche_id = n.id
+                           JOIN device_account_bindings dab
+                                ON a.id = dab.account_id
+                                AND dab.device_id = %s
+                                AND dab.unbound_at IS NULL
+                           WHERE a.current_state IN %s
+                             AND a.platform IN %s
+                             AND a.deleted_at IS NULL
+                             AND (a.last_warmed_at IS NULL
+                                  OR a.last_warmed_at < CURRENT_DATE)
+                           ORDER BY
+                             CASE a.current_state
+                               WHEN %s THEN 0
+                               WHEN %s THEN 1
+                               WHEN %s THEN 2
+                               WHEN %s THEN 3
+                               WHEN %s THEN 4
+                             END,
+                             a.last_warmed_at ASC NULLS FIRST
+                           LIMIT 1
+                           FOR UPDATE OF a SKIP LOCKED""",
+                        (
+                            device_id,
+                            (AccountState.CREATED, AccountState.WARMING_P1, AccountState.WARMING_P2,
+                             AccountState.WARMING_P3, AccountState.ACTIVE),
+                            WARMABLE_PLATFORMS,
+                            AccountState.CREATED, AccountState.WARMING_P1,
+                            AccountState.WARMING_P2, AccountState.WARMING_P3,
+                            AccountState.ACTIVE,
+                        ),
+                    )
+                    row = cur.fetchone()
+                    conn.commit()
+
+                    if row:
+                        return {
+                            "type": "warm",
+                            "account": dict(zip(
+                                ["id", "platform", "username", "current_state",
+                                 "warming_day_count", "email_enc", "password_enc",
+                                 "totp_secret_enc", "niche_id", "niche_slug"],
+                                row,
+                            )),
+                        }
         except Exception:
             logger.error("Error getting next warming task", exc_info=True)
 
@@ -345,13 +396,14 @@ class DeviceScheduler:
         device: WDADevice,
         dt: DeviceThread,
         task: dict[str, Any],
-    ) -> None:
-        """Execute a warming session."""
+    ) -> bool:
+        """Execute a warming session. Returns True on success."""
         account = task["account"]
         platform = account["platform"]
         username = account["username"]
         account_id = str(account["id"])
         device_id = dt.device_id
+        success = False
 
         dt.current_task = f"warming:{platform}/{username}"
         dt.current_account = username
@@ -393,6 +445,11 @@ class DeviceScheduler:
             delete_app(session, platform, device_id=device_id)
             time.sleep(2)
 
+            # Step 1.5: Reset IDFA between sessions
+            dt.current_task = f"resetting_idfa:{device.name}"
+            reset_idfa(session, device_id=device_id)
+            time.sleep(2)
+
             # Step 2: Install fresh
             dt.current_task = f"installing:{platform}"
             if not install_from_app_store(session, platform, device_id=device_id):
@@ -400,7 +457,7 @@ class DeviceScheduler:
                            f"Failed to install {platform} for warming",
                            device_id=device_id, account_id=account_id,
                            context={"platform": platform, "retry_count": 0})
-                return
+                return False
 
             # Step 3: Login
             dt.current_task = f"logging_in:{platform}/{username}"
@@ -413,7 +470,7 @@ class DeviceScheduler:
                                "username": username,
                                "step": "login",
                            })
-                return
+                return False
 
             # Step 4: Warm
             dt.current_task = f"warming:{platform}/{username}"
@@ -460,6 +517,7 @@ class DeviceScheduler:
                             "new_state": new_state,
                             "warming_day": new_day_count,
                         })
+            success = True
 
         except Exception:
             logger.error("Warming failed for %s/%s on %s",
@@ -473,6 +531,8 @@ class DeviceScheduler:
             session.disconnect()
             dt.current_account = None
             time.sleep(2)
+
+        return success
 
     def _execute_email_creation(
         self,
@@ -591,8 +651,8 @@ class DeviceScheduler:
         device: WDADevice,
         dt: DeviceThread,
         task: dict[str, Any],
-    ) -> None:
-        """Execute a legacy account creation task (non-persona)."""
+    ) -> bool:
+        """Execute an account creation task. Returns True on success."""
         platform = task["platform"]
         device_id = dt.device_id
         dt.current_task = f"creating:{platform}"
@@ -602,11 +662,16 @@ class DeviceScheduler:
                     device_id=device_id,
                     context={"platform": platform})
 
-        # Legacy creation requires persona pipeline — skip if no personas
+        # TODO: integrate with email provider to generate disposable email
+        # For now, log that creation is needed and skip
+        # When implemented: after creating account, auto-bind to this device:
+        #   from sovi.device.identity_guard import validate_device_account_affinity
+        #   validate_device_account_affinity(device_id, new_account_id)
         events.emit("scheduler", "warning", "creation_skipped",
                     f"Account creation for {platform}: use persona pipeline instead",
                     device_id=device_id,
-                    context={"platform": platform, "reason": "use_persona_pipeline"})
+                    context={"platform": platform, "reason": "email_provider_not_configured"})
+        return False  # no-op until email provider is integrated
 
     @staticmethod
     def _reset_device(session: WDASession) -> None:

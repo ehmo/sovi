@@ -36,6 +36,104 @@ APP_NAMES: dict[str, str] = {
 }
 
 
+def reset_idfa(wda: WDASession, *, device_id: str | None = None) -> bool:
+    """Reset IDFA by toggling Settings > Privacy & Security > Tracking off/on.
+
+    On iOS 14.5+ with ATT, IDFA is zeroed by default when tracking is denied.
+    This is defense-in-depth: toggling the global tracking switch forces a new
+    IDFA assignment even if an app had previously been granted permission.
+    """
+    try:
+        # Open Settings app
+        wda.launch_app("com.apple.Preferences")
+        time.sleep(2)
+
+        # Navigate to Privacy & Security
+        privacy_el = wda.find_element("accessibility id", "Privacy & Security")
+        if not privacy_el:
+            # Try scrolling to find it
+            for _ in range(3):
+                wda.swipe_up(duration=0.5)
+                time.sleep(1)
+                privacy_el = wda.find_element("accessibility id", "Privacy & Security")
+                if privacy_el:
+                    break
+
+        if not privacy_el:
+            logger.warning("Could not find Privacy & Security in Settings")
+            events.emit("device", "warning", "idfa_reset_failed",
+                        "Could not find Privacy & Security menu",
+                        device_id=device_id)
+            return False
+
+        wda.element_click(privacy_el["ELEMENT"])
+        time.sleep(2)
+
+        # Navigate to Tracking
+        tracking_el = wda.find_element("accessibility id", "Tracking")
+        if not tracking_el:
+            for _ in range(3):
+                wda.swipe_up(duration=0.5)
+                time.sleep(1)
+                tracking_el = wda.find_element("accessibility id", "Tracking")
+                if tracking_el:
+                    break
+
+        if not tracking_el:
+            logger.warning("Could not find Tracking in Privacy settings")
+            events.emit("device", "warning", "idfa_reset_failed",
+                        "Could not find Tracking menu",
+                        device_id=device_id)
+            return False
+
+        wda.element_click(tracking_el["ELEMENT"])
+        time.sleep(2)
+
+        # Find the "Allow Apps to Request to Track" switch
+        switch_el = wda.find_element(
+            "predicate string",
+            'type == "XCUIElementTypeSwitch" AND (name CONTAINS "Allow" OR name CONTAINS "Track")'
+        )
+        if not switch_el:
+            logger.warning("Could not find tracking switch")
+            events.emit("device", "warning", "idfa_reset_failed",
+                        "Could not find tracking toggle switch",
+                        device_id=device_id)
+            return False
+
+        el_id = switch_el["ELEMENT"]
+
+        # Toggle off
+        wda.element_click(el_id)
+        time.sleep(1)
+
+        # Toggle back on
+        wda.element_click(el_id)
+        time.sleep(1)
+
+        # Go home
+        wda.press_button("home")
+        time.sleep(1)
+
+        logger.info("IDFA reset completed")
+        events.emit("device", "info", "idfa_reset",
+                    "IDFA reset via tracking toggle",
+                    device_id=device_id)
+        return True
+
+    except Exception:
+        logger.error("IDFA reset failed", exc_info=True)
+        events.emit("device", "error", "idfa_reset_failed",
+                    "IDFA reset exception",
+                    device_id=device_id)
+        # Go home on failure
+        try:
+            wda.press_button("home")
+        except Exception:
+            pass
+        return False
+
+
 def delete_app(wda: WDASession, platform: str, *, device_id: str | None = None) -> bool:
     """Delete an app from the device to reset IDFV.
 

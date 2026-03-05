@@ -80,6 +80,8 @@ db-migrate: ## Run migration SQL files on studio
 		$(PSQL) -U sovi -d sovi -f migrations/001_initial_schema.sql 2>&1 | tail -3'
 	ssh $(STUDIO) '$(REMOTE_ENV) && cd $(DEPLOY_PATH) && \
 		$(PSQL) -U sovi -d sovi -f migrations/003_scheduler_events.sql 2>&1 | tail -3'
+	ssh $(STUDIO) '$(REMOTE_ENV) && cd $(DEPLOY_PATH) && \
+		$(PSQL) -U sovi -d sovi -f migrations/004_identity_guardrails.sql 2>&1 | tail -3'
 	@echo "==> Migrations done."
 
 db-status: ## Show table counts via psql
