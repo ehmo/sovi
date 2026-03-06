@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import mock_open, patch
 
 import pytest
 
@@ -10,6 +11,7 @@ from sovi.config import (
     CONFIG_DIR,
     NICHES_DIR,
     Settings,
+    _resolve_env_file,
     load_all_niche_configs,
     load_niche_config,
 )
@@ -64,3 +66,37 @@ def test_load_all_niches():
 def test_load_missing_niche():
     with pytest.raises(FileNotFoundError):
         load_niche_config("nonexistent_niche_xyz")
+
+
+# --- _resolve_env_file ---
+
+
+class TestResolveEnvFile:
+    def test_no_env_file(self, tmp_path):
+        with patch("sovi.config.PROJECT_ROOT", tmp_path):
+            result = _resolve_env_file()
+        assert result is None
+
+    def test_plain_env_file(self, tmp_path):
+        env_path = tmp_path / ".env"
+        env_path.write_text("DATABASE_URL=postgresql://x\n")
+        with patch("sovi.config.PROJECT_ROOT", tmp_path):
+            result = _resolve_env_file()
+        assert result == str(env_path)
+
+    def test_git_crypt_encrypted_env(self, tmp_path):
+        env_path = tmp_path / ".env"
+        env_path.write_bytes(b"\x00GITCRYPT\x00" + b"\xff" * 100)
+        with patch("sovi.config.PROJECT_ROOT", tmp_path):
+            result = _resolve_env_file()
+        assert result is None
+
+    def test_unreadable_env_file(self, tmp_path):
+        env_path = tmp_path / ".env"
+        env_path.write_text("x")
+        with (
+            patch("sovi.config.PROJECT_ROOT", tmp_path),
+            patch("builtins.open", side_effect=OSError("permission denied")),
+        ):
+            result = _resolve_env_file()
+        assert result is None

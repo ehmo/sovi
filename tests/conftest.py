@@ -5,31 +5,10 @@ Provides mock DB fixtures so tests can run without PostgreSQL.
 
 from __future__ import annotations
 
-import os
 from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
-
-# Prevent pydantic-settings from reading encrypted .env file.
-# Must happen before any sovi module import triggers Settings().
-os.environ.setdefault("SOVI_MASTER_KEY", "test-key-not-real")
-# Point env_file at a nonexistent path so dotenv skips it
-os.environ["ENV_FILE"] = "/dev/null"
-
-# Monkey-patch Settings to skip .env loading in tests
-from pydantic_settings import BaseSettings
-
-_original_init = BaseSettings.__init__
-
-
-def _patched_init(self, *args, **kwargs):
-    # Override env_file to avoid reading encrypted .env
-    kwargs.setdefault("_env_file", None)
-    _original_init(self, *args, **kwargs)
-
-
-BaseSettings.__init__ = _patched_init
 
 
 @pytest.fixture

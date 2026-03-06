@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 from typing import Any
@@ -12,13 +13,35 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from sovi.models import VideoTier
 
+logger = logging.getLogger(__name__)
+
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 CONFIG_DIR = PROJECT_ROOT / "config"
 NICHES_DIR = CONFIG_DIR / "niches"
 
 
+def _resolve_env_file() -> str | None:
+    """Return .env path only if it exists and is readable (not git-crypt encrypted)."""
+    env_path = PROJECT_ROOT / ".env"
+    if not env_path.exists():
+        return None
+    try:
+        with open(env_path, "rb") as f:
+            header = f.read(10)
+        if header.startswith(b"\x00GITCRYPT"):
+            logger.debug(".env is git-crypt encrypted — skipping, using env vars only")
+            return None
+        return str(env_path)
+    except OSError:
+        return None
+
+
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_file=_resolve_env_file(),
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
 
     # Database
     database_url: str = "postgresql://sovi:sovi@localhost:5432/sovi"
