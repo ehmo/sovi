@@ -1,4 +1,4 @@
-"""Persona generation via Claude API.
+"""Persona generation via LLM API (Gemini or Claude).
 
 Generates diverse fictional personas for a niche, including name, demographics,
 occupation, bio, and interests. Uses the niche's voice profile and content
@@ -10,9 +10,7 @@ from __future__ import annotations
 import json
 import logging
 import random
-from datetime import date, timedelta
-
-import anthropic
+from datetime import date
 
 from sovi.config import load_niche_config, settings
 
@@ -43,26 +41,12 @@ US_STATES = [
 ]
 
 
-def generate_personas(niche_id: str, niche_slug: str, count: int = 10) -> list[dict]:
-    """Generate `count` personas for a niche using Claude.
-
-    Produces diverse mix of ages (22-55), genders, ethnicities, occupations.
-    Each persona gets: name, DOB, location, occupation, bio, interests, username.
-    """
-    if not settings.anthropic_api_key:
-        logger.error("ANTHROPIC_API_KEY not configured")
-        return []
-
-    # Load niche config for context
-    try:
-        niche_config = load_niche_config(niche_slug)
-    except FileNotFoundError:
-        niche_config = {"name": niche_slug}
-
+def _build_prompt(niche_config: dict, niche_slug: str, count: int) -> str:
+    """Build the persona generation prompt."""
     voice = niche_config.get("voice_profile", {})
     pillars = niche_config.get("content_pillars", [])
 
-    prompt = f"""Generate {count} diverse fictional social media personas for the "{niche_config.get('name', niche_slug)}" niche.
+    return f"""Generate {count} diverse fictional social media personas for the "{niche_config.get('name', niche_slug)}" niche.
 
 Niche context:
 - Voice: {voice.get('tone', 'authentic and relatable')}
@@ -99,27 +83,83 @@ Return a JSON array where each object has:
 
 Return ONLY the JSON array, no other text."""
 
+
+def _call_gemini(prompt: str) -> str:
+    """Call Google Gemini API and return text response."""
+    import httpx
+
+    resp = httpx.post(
+        f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={settings.gemini_api_key}",
+        json={
+            "contents": [{"parts": [{"text": prompt}]}],
+            "generationConfig": {
+                "temperature": 0.9,
+                "maxOutputTokens": 8192,
+                "responseMimeType": "application/json",
+            },
+        },
+        timeout=60.0,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    return data["candidates"][0]["content"]["parts"][0]["text"]
+
+
+def _call_anthropic(prompt: str) -> str:
+    """Call Anthropic Claude API and return text response."""
+    import anthropic
+
     client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+    response = client.messages.create(
+        model="claude-sonnet-4-20250514",
+        max_tokens=4096,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    return response.content[0].text.strip()
+
+
+def _extract_json(text: str) -> list[dict]:
+    """Parse JSON from LLM response, stripping markdown fences if present."""
+    text = text.strip()
+    if text.startswith("```"):
+        text = text.split("\n", 1)[1]
+        text = text.rsplit("```", 1)[0]
+    return json.loads(text)
+
+
+def generate_personas(niche_id: str, niche_slug: str, count: int = 10) -> list[dict]:
+    """Generate `count` personas for a niche using Gemini (preferred) or Claude.
+
+    Produces diverse mix of ages (22-55), genders, ethnicities, occupations.
+    Each persona gets: name, DOB, location, occupation, bio, interests, username.
+    """
+    # Prefer Gemini, fall back to Anthropic
+    if not settings.gemini_api_key and not settings.anthropic_api_key:
+        logger.error("No LLM API key configured (GEMINI_API_KEY or ANTHROPIC_API_KEY)")
+        return []
+
+    # Load niche config for context
+    try:
+        niche_config = load_niche_config(niche_slug)
+    except FileNotFoundError:
+        niche_config = {"name": niche_slug}
+
+    prompt = _build_prompt(niche_config, niche_slug, count)
 
     try:
-        response = client.messages.create(
-            model="claude-sonnet-4-20250514",
-            max_tokens=4096,
-            messages=[{"role": "user", "content": prompt}],
-        )
+        if settings.gemini_api_key:
+            logger.info("Using Gemini for persona generation")
+            text = _call_gemini(prompt)
+        else:
+            logger.info("Using Claude for persona generation")
+            text = _call_anthropic(prompt)
 
-        text = response.content[0].text.strip()
-        # Strip markdown code fence if present
-        if text.startswith("```"):
-            text = text.split("\n", 1)[1]
-            text = text.rsplit("```", 1)[0]
-
-        raw_personas = json.loads(text)
+        raw_personas = _extract_json(text)
     except json.JSONDecodeError:
-        logger.error("Failed to parse persona JSON from Claude response")
+        logger.error("Failed to parse persona JSON from LLM response")
         return []
     except Exception:
-        logger.error("Claude API call failed for persona generation", exc_info=True)
+        logger.error("LLM API call failed for persona generation", exc_info=True)
         return []
 
     # Post-process: add derived fields

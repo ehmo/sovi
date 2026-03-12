@@ -51,6 +51,7 @@ class Settings(BaseSettings):
 
     # AI Models
     anthropic_api_key: str = ""
+    gemini_api_key: str = ""
     fal_key: str = ""
     openai_api_key: str = ""
 
