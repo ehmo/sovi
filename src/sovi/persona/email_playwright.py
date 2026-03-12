@@ -1,494 +1,351 @@
-"""Email account creation via Playwright (headless browser on Mac).
+"""Email account creation via Playwright — mail.com with CaptchaFox solver.
 
-Alternative to WDA-based on-device creation. Uses headless Chromium
-to create Outlook/Mail.com accounts directly from the Mac Studio.
+Uses headed Chromium + playwright-stealth to create mail.com accounts.
+CaptchaFox slider CAPTCHA solved via PIL-based icon detection.
+Scale factor 0.93: canvas moves 93px per 100px of slider drag.
+One attempt per challenge — restarts full flow on failure.
 Stores credentials encrypted in email_accounts table.
 """
 
 from __future__ import annotations
 
+import io
 import logging
 import random
 import string
 import time
+
+from PIL import Image
 
 from sovi.crypto import encrypt
 from sovi.db import sync_execute_one
 
 logger = logging.getLogger(__name__)
 
-# Provider configs
-PROVIDERS = {
-    "outlook": {
-        "signup_url": "https://signup.live.com/signup",
-        "imap_host": "outlook.office365.com",
-        "imap_port": 993,
-        "domains": ["outlook.com", "hotmail.com"],
-    },
-    "mailcom": {
-        "signup_url": "https://www.mail.com/int/",
-        "imap_host": "imap.mail.com",
-        "imap_port": 993,
-        "domains": [
-            "mail.com", "email.com", "usa.com", "post.com",
-            "engineer.com", "consultant.com", "myself.com",
-        ],
-    },
-}
+SCALE_FACTOR = 0.93
+MAX_CAPTCHA_ATTEMPTS = 5
 
 
 def _generate_password() -> str:
-    """Generate a strong random password."""
-    chars = string.ascii_letters + string.digits + "!@#$%"
+    """Generate a strong random password meeting mail.com requirements."""
     pw = [
         random.choice(string.ascii_uppercase),
         random.choice(string.ascii_lowercase),
         random.choice(string.digits),
         random.choice("!@#$%"),
     ]
-    pw.extend(random.choices(chars, k=12))
+    pw.extend(random.choices(string.ascii_letters + string.digits + "!@#$%", k=12))
     random.shuffle(pw)
     return "".join(pw)
 
 
-def _derive_email_username(persona: dict) -> str:
-    """Derive an email username from persona data."""
-    first = persona["first_name"].lower().replace(" ", "")
-    last = persona["last_name"].lower().replace(" ", "")
-    age = persona.get("age", 28)
-    birth_year = str(2026 - age)[-2:]
-    variants = [
-        f"{first}.{last}",
-        f"{first}{last}{birth_year}",
-        f"{first}.{last}{birth_year}",
-        f"{first}_{last}",
-        f"{first}{last[0]}{birth_year}",
-    ]
-    return random.choice(variants)
+def _find_icon_centers(img_bytes: bytes) -> tuple[float, float] | None:
+    """Find center X of source and target icons via non-white pixel clusters."""
+    img = Image.open(io.BytesIO(img_bytes)).convert("RGBA")
+    w, h = img.size
+    pixels = img.load()
+    col_scores = []
+    for x in range(w):
+        score = 0
+        for y in range(h):
+            r, g, b, a = pixels[x, y]
+            if a > 128 and (r < 220 or g < 220 or b < 220):
+                score += 1
+        col_scores.append(score)
+    threshold = max(col_scores) * 0.15 if max(col_scores) > 0 else 1
+    clusters = []
+    in_cluster = False
+    start = 0
+    for x, score in enumerate(col_scores):
+        if score >= threshold:
+            if not in_cluster:
+                start = x
+                in_cluster = True
+        else:
+            if in_cluster:
+                clusters.append((start, x - 1))
+                in_cluster = False
+    if in_cluster:
+        clusters.append((start, w - 1))
+    clusters = [(s, e) for s, e in clusters if e - s >= 8]
+    if len(clusters) >= 2:
+        return (clusters[0][0] + clusters[0][1]) / 2, (clusters[-1][0] + clusters[-1][1]) / 2
+    return None
 
 
-def _human_type(page, selector: str, text: str) -> None:
-    """Type text with human-like delays."""
-    page.click(selector)
+def _drag_slider(page, offset: int) -> bool:
+    """Drag CaptchaFox slider with human-like movement. Returns True if solved."""
+    try:
+        page.wait_for_selector(".cf-slider__button", state="visible", timeout=5000)
+    except Exception:
+        return False
+    time.sleep(0.5)
+    btn = page.query_selector(".cf-slider__button")
+    if not btn:
+        return False
+    box = btn.bounding_box()
+    if not box:
+        return False
+
+    sx = box["x"] + box["width"] / 2
+    sy = box["y"] + box["height"] / 2
+    tx = sx + offset
+
+    page.mouse.move(sx, sy, steps=random.randint(4, 8))
+    time.sleep(random.uniform(0.2, 0.4))
+    page.mouse.down()
+    time.sleep(random.uniform(0.1, 0.2))
+
+    steps = random.randint(25, 40)
+    for i in range(steps):
+        p = (i + 1) / steps
+        if p < 0.9:
+            eased = 1 - (1 - p / 0.9) ** 2.5
+            factor = eased * 0.95
+        else:
+            factor = 0.95 + (p - 0.9) / 0.1 * 0.05
+        cx = sx + (tx - sx) * factor
+        cy = sy + random.uniform(-1, 1)
+        page.mouse.move(cx, cy)
+        time.sleep(random.uniform(0.01, 0.03))
+
+    page.mouse.move(tx, sy)
+    time.sleep(random.uniform(0.3, 0.6))
+    page.mouse.up()
+    time.sleep(2)
+
+    state = page.evaluate(
+        "document.querySelector('div[role=checkbox]')?.getAttribute('aria-checked')"
+    )
+    return state == "true"
+
+
+def _attempt_signup(page, first: str, last: str, month: str, day: str, year: str, gender: str) -> tuple[str, str] | None:
+    """Run one full mail.com signup attempt. Returns (email, password) or None."""
+    page.goto("https://signup.mail.com/", wait_until="load", timeout=30000)
+    time.sleep(random.uniform(3, 5))
+
+    # Step 1: Name + DOB
+    page.fill("#given-name", first)
     time.sleep(random.uniform(0.2, 0.5))
-    for char in text:
-        page.keyboard.type(char, delay=random.randint(30, 120))
+    page.fill("#family-name", last)
+    time.sleep(random.uniform(0.2, 0.5))
+    page.fill("#bday-month", month)
+    page.fill("#bday-day", day)
+    page.fill("#bday-year", year)
+    page.evaluate("document.querySelectorAll('button[type=button]')[0].click()")
+    time.sleep(random.uniform(4, 6))
+
+    # Step 2: Pick email suggestion
+    chosen = page.evaluate("""(() => {
+        const row = document.querySelector('onereg-suggestion-item-advanced');
+        if (row) { const t = row.querySelector('.onereg-suggestion-item-advanced__text'); row.click(); return t ? t.textContent : null; }
+        return null;
+    })()""")
+    if not chosen:
+        return None
+    logger.info("Email suggestion: %s", chosen)
+    time.sleep(random.uniform(4, 6))
+
+    # Step 3: Salutation + Country + State
+    sal_idx = "0" if gender == "female" else "1"
+    page.evaluate("""(() => {
+        var radios = document.querySelectorAll('input[name=salutation]');
+        var idx = """ + sal_idx + """;
+        if (radios.length > idx) { radios[idx].checked = true; radios[idx].dispatchEvent(new Event('change', {bubbles: true})); }
+        var country = document.querySelector('#country');
+        if (country) { country.value = 'US'; country.dispatchEvent(new Event('change', {bubbles: true})); }
+    })()""")
+    time.sleep(2)
+    page.evaluate("""(() => {
+        var r = document.querySelector('#region');
+        if (r && r.options.length > 1) { r.value = r.options[1].value; r.dispatchEvent(new Event('change', {bubbles: true})); }
+    })()""")
+    time.sleep(1)
+    page.evaluate("document.querySelector('[data-test=progress-meter-next]').click()")
+    time.sleep(random.uniform(4, 6))
+
+    # Step 4: Password
+    password = _generate_password()
+    page.fill("#password", password)
+    time.sleep(0.5)
+    page.fill("#confirm-password", password)
+    time.sleep(0.5)
+    page.evaluate("document.querySelector('[data-test=progress-meter-next]').click()")
+    time.sleep(random.uniform(4, 6))
+
+    # Step 5: Skip phone
+    page.evaluate("document.querySelector('[data-test=progress-meter-next]').click()")
+    time.sleep(random.uniform(4, 6))
+
+    # Step 6: CaptchaFox checkbox
+    cb = page.query_selector('div[role="checkbox"]')
+    if not cb or not cb.bounding_box():
+        return None
+    box = cb.bounding_box()
+    page.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2, steps=8)
+    time.sleep(0.4)
+    page.mouse.click(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+    time.sleep(3)
+
+    # Step 7: Solve slider
+    canvas_area = page.query_selector(".cf-slide__action")
+    if not canvas_area:
+        return None
+    img_bytes = canvas_area.screenshot()
+    result = _find_icon_centers(img_bytes)
+    if not result:
+        return None
+
+    left_x, right_x = result
+    canvas_dist = right_x - left_x
+    slider_offset = max(10, min(int(canvas_dist / SCALE_FACTOR), 260))
+
+    if not _drag_slider(page, slider_offset):
+        return None
+
+    # Step 8: Click "Agree and continue"
+    time.sleep(2)
+    page.evaluate("document.querySelector('[data-test=create-mailbox-create-button]')?.click()")
+    time.sleep(3)
+    try:
+        btn = page.query_selector("[data-test=create-mailbox-create-button]")
+        if btn:
+            btn.click(force=True, timeout=5000)
+    except Exception:
+        pass
+    time.sleep(15)
+
+    return (chosen, password)
 
 
-def create_email_playwright(
-    persona: dict,
-    provider: str = "outlook",
-) -> dict | None:
-    """Create an email account using headless Playwright browser.
+def create_email_mailcom(persona: dict, max_attempts: int = MAX_CAPTCHA_ATTEMPTS) -> dict | None:
+    """Create a mail.com email account for a persona.
 
-    Returns email_account dict on success, None on failure.
+    Returns dict with email_plain, password_plain, db_id on success, None on failure.
     """
     from playwright.sync_api import sync_playwright
+    from playwright_stealth import Stealth
 
-    if provider not in PROVIDERS:
-        logger.error("Unknown provider: %s", provider)
-        return None
+    first = persona["first_name"]
+    last = persona["last_name"]
+    dob = str(persona["date_of_birth"])  # YYYY-MM-DD
+    gender = persona.get("gender", "female")
+    parts = dob.split("-")
+    month, day, year = parts[1], parts[2], parts[0]
 
-    config = PROVIDERS[provider]
-    persona_id = str(persona["id"])
-    username = _derive_email_username(persona)
-    domain = random.choice(config["domains"])
-    email_address = f"{username}@{domain}"
-    password = _generate_password()
+    logger.info("Creating mail.com account for %s %s", first, last)
 
-    logger.info("Creating %s email for %s: %s", provider, persona.get("display_name"), email_address)
-
-    try:
-        with sync_playwright() as p:
-            browser = p.chromium.launch(
-                headless=True,
-                args=["--disable-blink-features=AutomationControlled"],
-            )
-            context = browser.new_context(
-                viewport={"width": 1280, "height": 800},
-                user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                locale="en-US",
-            )
-            page = context.new_page()
-
-            if provider == "outlook":
-                success = _signup_outlook_pw(page, persona, username, domain, password)
-            elif provider == "mailcom":
-                success = _signup_mailcom_pw(page, persona, username, domain, password)
-            else:
-                success = False
-
-            browser.close()
-
-        if not success:
-            logger.warning("Signup failed for %s", email_address)
-            return None
-
-        # Store in DB
-        row = sync_execute_one(
-            """INSERT INTO email_accounts
-               (persona_id, provider, email, password, imap_host, imap_port, domain, status)
-               VALUES (%s, %s, %s, %s, %s, %s, %s, 'available')
-               RETURNING id, provider, domain, status""",
-            (
-                persona_id, provider,
-                encrypt(email_address), encrypt(password),
-                config["imap_host"], config["imap_port"],
-                domain,
-            ),
+    with sync_playwright() as p:
+        browser = p.chromium.launch(
+            headless=False,
+            args=["--disable-blink-features=AutomationControlled", "--no-sandbox"],
         )
+        context = browser.new_context(
+            viewport={"width": 1280, "height": 800},
+            user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+            locale="en-US",
+        )
+        Stealth().apply_stealth_sync(context)
+        page = context.new_page()
 
-        if row:
-            logger.info("Email created and stored: %s (id=%s)", email_address, row["id"])
-            return {**dict(row), "email_plain": email_address}
-
-        return None
-
-    except Exception:
-        logger.error("Playwright email creation failed for %s", persona.get("display_name"), exc_info=True)
-        return None
-
-
-def _select_custom_dropdown(page, button_id: str, value: str) -> None:
-    """Click a custom MS dropdown button and select an option by text."""
-    # Use force=True to bypass label interception
-    page.click(f"#{button_id}", force=True)
-    time.sleep(0.5)
-    # The dropdown renders a list — click the matching option
-    option = page.query_selector(f'div[role="option"]:has-text("{value}"), li[role="option"]:has-text("{value}")')
-    if option:
-        option.click()
-    else:
-        # Fallback: try clicking by exact text match in any visible element
-        page.click(f'text="{value}"')
-    time.sleep(0.3)
-
-
-def _signup_outlook_pw(page, persona: dict, username: str, domain: str, password: str) -> bool:
-    """Outlook signup flow via Playwright (2026 MS signup UI)."""
-    month_names = [
-        "", "January", "February", "March", "April", "May", "June",
-        "July", "August", "September", "October", "November", "December",
-    ]
-
-    try:
-        page.goto("https://signup.live.com/signup", wait_until="load", timeout=30000)
-        time.sleep(3)
-
-        # Step 1: Enter username (page has separate username + domain fields)
-        email_sel = 'input[name="Email"], input[type="email"]'
-        page.wait_for_selector(email_sel, timeout=15000)
-        # Use highly unique username with random suffix
-        unique_username = f"{username}{random.randint(1000, 9999)}"
-        full_email = f"{unique_username}@{domain}"
-        _human_type(page, email_sel, full_email)
-        time.sleep(0.5)
-
-        page.click('button[type="submit"]')
-        time.sleep(5)
-        page.screenshot(path="/tmp/outlook_step1.png")
-
-        # Check if username was taken — try suggestions or retry
-        for attempt in range(3):
-            page_text = page.inner_text("body")
-            if "already taken" in page_text.lower():
-                # Try clicking a suggested alternative
-                suggestions = page.query_selector_all('button[data-testid*="suggestion"], a[class*="suggestion"]')
-                if suggestions:
-                    suggestions[0].click()
-                    time.sleep(1)
-                    page.click('button[type="submit"]')
-                    time.sleep(5)
-                else:
-                    # Clear and try with different suffix
-                    email_input = page.query_selector(email_sel)
-                    if email_input:
-                        email_input.fill("")
-                    unique_username = f"{username}{random.randint(10000, 99999)}"
-                    full_email = f"{unique_username}@{domain}"
-                    _human_type(page, email_sel, full_email)
-                    time.sleep(0.5)
-                    page.click('button[type="submit"]')
-                    time.sleep(5)
-            else:
-                break
-
-        # Step 2: Password
-        try:
-            pw_sel = 'input[name="Password"], input[type="password"]'
-            page.wait_for_selector(pw_sel, timeout=10000)
-            _human_type(page, pw_sel, password)
-            time.sleep(0.5)
-            page.click('button[type="submit"]')
-            time.sleep(4)
-            page.screenshot(path="/tmp/outlook_step2.png")
-        except Exception:
-            logger.warning("Password step failed")
-            page.screenshot(path="/tmp/outlook_pw_fail.png")
-            return False
-
-        # Step 3: Country/Region + DOB (no name step in 2026 flow)
-        try:
-            # Wait for BirthMonth dropdown button
-            page.wait_for_selector('#BirthMonthDropdown', timeout=10000)
-
-            dob = persona.get("date_of_birth", "1995-06-15")
-            parts = dob.split("-") if isinstance(dob, str) else ["1995", "06", "15"]
-            month_idx = int(parts[1])
-            day = int(parts[2])
-            year = parts[0]
-
-            # Select month via custom dropdown
-            _select_custom_dropdown(page, "BirthMonthDropdown", month_names[month_idx])
-            time.sleep(0.3)
-
-            # Select day via custom dropdown
-            _select_custom_dropdown(page, "BirthDayDropdown", str(day))
-            time.sleep(0.3)
-
-            # Type year in input
-            year_sel = 'input[name="BirthYear"]'
-            page.click(year_sel)
-            page.fill(year_sel, year)
-            time.sleep(0.5)
-
-            page.click('button[type="submit"]')
-            time.sleep(4)
-            page.screenshot(path="/tmp/outlook_step3.png")
-        except Exception as e:
-            logger.warning("DOB step failed: %s", e)
-            page.screenshot(path="/tmp/outlook_dob_fail.png")
-
-        # Step 4: Name (comes AFTER DOB in 2026 MS flow)
-        try:
-            first_sel = 'input[name="firstNameInput"], input[name="FirstName"], input#firstNameInput'
-            page.wait_for_selector(first_sel, timeout=10000)
-            _human_type(page, first_sel, persona["first_name"])
-            time.sleep(0.3)
-
-            last_sel = 'input[name="lastNameInput"], input[name="LastName"], input#lastNameInput'
-            _human_type(page, last_sel, persona["last_name"])
-            time.sleep(0.5)
-            page.click('button[type="submit"]')
-            time.sleep(5)
-            page.screenshot(path="/tmp/outlook_step4.png")
-        except Exception as e:
-            logger.warning("Name step failed: %s", e)
-            page.screenshot(path="/tmp/outlook_name_fail.png")
-
-        # Step 5: Handle CAPTCHA — "Press and hold" challenge
-        page.screenshot(path="/tmp/outlook_step5_pre.png")
-        page_text = page.inner_text("body")
-
-        if "prove you're human" in page_text.lower() or "press and hold" in page_text.lower():
-            logger.info("Attempting press-and-hold CAPTCHA...")
+        for attempt in range(1, max_attempts + 1):
+            logger.info("Attempt %d/%d for %s %s", attempt, max_attempts, first, last)
             try:
-                # The CAPTCHA is inside an hsprotect iframe, rendered as a canvas
-                captcha_frame = None
-                for frame in page.frames:
-                    if "hsprotect" in frame.url:
-                        captcha_frame = frame
-                        break
+                result = _attempt_signup(page, first, last, month, day, year, gender)
+                if result:
+                    email, pw = result
+                    browser.close()
 
-                if captcha_frame:
-                    # Find the iframe element in the parent page to get its position
-                    iframe_el = page.query_selector('iframe[src*="hsprotect"]')
-                    if iframe_el:
-                        iframe_box = iframe_el.bounding_box()
-                        if iframe_box:
-                            # The press-and-hold button is roughly centered in the iframe
-                            # Click at the center-bottom area of the iframe
-                            cx = iframe_box["x"] + iframe_box["width"] / 2
-                            cy = iframe_box["y"] + iframe_box["height"] * 0.7
-                            hold_duration = random.uniform(10, 14)
-                            logger.info("Pressing at (%d, %d) for %.1fs", cx, cy, hold_duration)
-                            page.mouse.move(cx, cy)
-                            time.sleep(random.uniform(0.3, 0.6))
-                            page.mouse.down()
-                            time.sleep(hold_duration)
-                            page.mouse.up()
-                            time.sleep(8)
-                            page.screenshot(path="/tmp/outlook_captcha_result.png")
-                            logger.info("Press-and-hold completed")
-                        else:
-                            logger.warning("iframe has no bounding box")
-                    else:
-                        logger.warning("hsprotect iframe element not found in parent page")
-                else:
-                    logger.warning("No hsprotect iframe found")
+                    # Store in DB
+                    domain = email.split("@")[1] if "@" in email else "mail.com"
+                    row = sync_execute_one(
+                        """INSERT INTO email_accounts
+                           (persona_id, provider, email, password, imap_host, imap_port, domain, status)
+                           VALUES (%s, %s, %s, %s, %s, %s, %s, 'available')
+                           RETURNING id""",
+                        (str(persona["id"]), "mailcom", encrypt(email), encrypt(pw),
+                         "imap.mail.com", 993, domain),
+                    )
+                    db_id = row["id"] if row else None
+                    logger.info("Created %s (db id=%s)", email, db_id)
+                    return {"email_plain": email, "password_plain": pw, "db_id": db_id}
             except Exception as e:
-                logger.warning("CAPTCHA handling failed: %s", e)
+                logger.warning("Attempt %d error: %s", attempt, e)
 
-        # Re-check page state after CAPTCHA attempt
-        page.screenshot(path="/tmp/outlook_final.png")
-        url = page.url
-        page_text = page.inner_text("body")
+            time.sleep(random.uniform(2, 5))
 
-        # Still on challenge
-        if "prove you're human" in page_text.lower():
-            logger.warning("CAPTCHA not solved at %s", url)
-            return False
-
-        if "challenge" in url or "captcha" in url.lower():
-            logger.warning("Hit secondary CAPTCHA at %s", url)
-            return False
-
-        if "proofs" in url or "verify" in url:
-            logger.warning("Hit phone verification at %s", url)
-            return False
-
-        # If we see "Your account has been created" or similar success indicators
-        if "account" in page_text.lower() and ("created" in page_text.lower() or "welcome" in page_text.lower()):
-            logger.info("Outlook signup succeeded for %s", full_email)
-            return True
-
-        # If we're on outlook.com or a mail page, success
-        if "outlook.live.com" in url or "outlook.com" in url:
-            logger.info("Outlook signup succeeded (redirected to inbox) for %s", full_email)
-            return True
-
-        # If still on signup page, the flow didn't complete
-        if "signup.live.com" in url:
-            logger.warning("Signup incomplete — still on signup page: %s", url)
-            return False
-
-        logger.info("Outlook signup flow completed for %s (url: %s)", full_email, url)
-        return True
-
-    except Exception:
-        logger.error("Outlook signup error", exc_info=True)
-        try:
-            page.screenshot(path="/tmp/outlook_error.png")
-        except Exception:
-            pass
-        return False
+        browser.close()
+        return None
 
 
-def _signup_mailcom_pw(page, persona: dict, username: str, domain: str, password: str) -> bool:
-    """Mail.com signup flow via Playwright."""
-    try:
-        page.goto("https://www.mail.com/int/", wait_until="load", timeout=30000)
-        time.sleep(2)
+def create_emails_batch(personas: list[dict]) -> list[dict]:
+    """Create mail.com email accounts for a batch of personas.
 
-        # Click Sign up / Free email
-        try:
-            signup_btn = page.query_selector('a[href*="signup"], a:has-text("Sign up"), a:has-text("Free email"), button:has-text("Sign up")')
-            if signup_btn:
-                signup_btn.click()
-                time.sleep(3)
-        except Exception:
-            # Try direct signup URL
-            page.goto("https://signup.mail.com/", wait_until="load", timeout=30000)
-            time.sleep(2)
-
-        # Enter desired email
-        email_input = page.query_selector('input[name="emailAddress"], input[name="localPart"], input[placeholder*="email"]')
-        if email_input:
-            email_input.click()
-            time.sleep(0.3)
-            _human_type(page, f'#{email_input.get_attribute("id") or "emailAddress"}', username)
-            time.sleep(1)
-
-        # Click check / next
-        try:
-            page.click('button:has-text("Check"), button:has-text("Next"), button[type="submit"]')
-            time.sleep(3)
-        except Exception:
-            pass
-
-        # Fill personal info
-        for field_name, value in [
-            ("firstName", persona["first_name"]),
-            ("lastName", persona["last_name"]),
-        ]:
-            try:
-                field = page.query_selector(f'input[name="{field_name}"]')
-                if field:
-                    field.click()
-                    time.sleep(0.2)
-                    field.fill(value)
-                    time.sleep(0.3)
-            except Exception:
-                pass
-
-        # Password
-        pw_field = page.query_selector('input[name="password"], input[type="password"]')
-        if pw_field:
-            pw_field.click()
-            time.sleep(0.2)
-            pw_field.fill(password)
-            time.sleep(0.3)
-
-        # DOB
-        dob = persona.get("date_of_birth", "1995-06-15")
-        if isinstance(dob, str):
-            parts = dob.split("-")
-            for sel, val in [
-                ('select[name="birthMonth"]', parts[1].lstrip("0")),
-                ('select[name="birthDay"]', parts[2].lstrip("0")),
-                ('input[name="birthYear"]', parts[0]),
-            ]:
-                try:
-                    el = page.query_selector(sel)
-                    if el:
-                        if sel.startswith("select"):
-                            page.select_option(sel, val)
-                        else:
-                            el.fill(val)
-                        time.sleep(0.2)
-                except Exception:
-                    pass
-
-        # Gender
-        gender = persona.get("gender", "female")
-        try:
-            gender_radio = page.query_selector(f'input[value="{gender}"], input[value="{gender[0].upper()}"]')
-            if gender_radio:
-                gender_radio.click()
-                time.sleep(0.2)
-        except Exception:
-            pass
-
-        # Submit
-        try:
-            page.click('button:has-text("Create"), button:has-text("Register"), button[type="submit"]')
-            time.sleep(5)
-        except Exception:
-            pass
-
-        page.screenshot(path="/tmp/mailcom_signup_result.png")
-
-        url = page.url
-        if "captcha" in url.lower() or "verify" in url.lower():
-            logger.warning("Hit CAPTCHA/verification at %s", url)
-            return False
-
-        logger.info("Mail.com signup flow completed for %s@%s", username, domain)
-        return True
-
-    except Exception:
-        logger.error("Mail.com signup error", exc_info=True)
-        page.screenshot(path="/tmp/mailcom_signup_error.png")
-        return False
-
-
-def create_emails_batch(
-    personas: list[dict],
-    provider: str = "outlook",
-    max_per_run: int = 10,
-) -> list[dict]:
-    """Create email accounts for a batch of personas.
-
-    Returns list of successfully created email account dicts.
+    Uses a single browser instance for efficiency.
+    Returns list of successfully created account dicts.
     """
-    results = []
-    for i, persona in enumerate(personas[:max_per_run]):
-        logger.info("Creating email %d/%d for %s", i + 1, min(len(personas), max_per_run), persona.get("display_name"))
-        result = create_email_playwright(persona, provider)
-        if result:
-            results.append(result)
-        # Delay between signups to avoid rate limiting
-        time.sleep(random.uniform(5, 15))
+    from playwright.sync_api import sync_playwright
+    from playwright_stealth import Stealth
 
-    logger.info("Created %d/%d emails", len(results), min(len(personas), max_per_run))
+    results = []
+    total = len(personas)
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(
+            headless=False,
+            args=["--disable-blink-features=AutomationControlled", "--no-sandbox"],
+        )
+        context = browser.new_context(
+            viewport={"width": 1280, "height": 800},
+            user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+            locale="en-US",
+        )
+        Stealth().apply_stealth_sync(context)
+        page = context.new_page()
+
+        for i, persona in enumerate(personas):
+            first = persona["first_name"]
+            last = persona["last_name"]
+            dob = str(persona["date_of_birth"])
+            gender = persona.get("gender", "female")
+            parts = dob.split("-")
+            month, day, year = parts[1], parts[2], parts[0]
+
+            logger.info("[%d/%d] %s %s", i + 1, total, first, last)
+            success = False
+
+            for attempt in range(1, MAX_CAPTCHA_ATTEMPTS + 1):
+                try:
+                    result = _attempt_signup(page, first, last, month, day, year, gender)
+                    if result:
+                        email, pw = result
+                        domain = email.split("@")[1] if "@" in email else "mail.com"
+                        row = sync_execute_one(
+                            """INSERT INTO email_accounts
+                               (persona_id, provider, email, password, imap_host, imap_port, domain, status)
+                               VALUES (%s, %s, %s, %s, %s, %s, %s, 'available')
+                               RETURNING id""",
+                            (str(persona["id"]), "mailcom", encrypt(email), encrypt(pw),
+                             "imap.mail.com", 993, domain),
+                        )
+                        db_id = row["id"] if row else None
+                        logger.info("Created %s (db id=%s)", email, db_id)
+                        results.append({"email_plain": email, "password_plain": pw, "db_id": db_id})
+                        success = True
+                        break
+                except Exception as e:
+                    logger.warning("Attempt %d error: %s", attempt, e)
+
+                time.sleep(random.uniform(2, 5))
+
+            if not success:
+                logger.warning("Failed all %d attempts for %s %s", MAX_CAPTCHA_ATTEMPTS, first, last)
+
+            if i < total - 1:
+                time.sleep(random.uniform(5, 15))
+
+        browser.close()
+
+    logger.info("Created %d/%d email accounts", len(results), total)
     return results
