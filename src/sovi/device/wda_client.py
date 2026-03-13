@@ -37,9 +37,9 @@ class WDASession:
     def __init__(self, device: WDADevice, timeout: float = 60.0) -> None:
         self.device = device
         self.client = httpx.Client(base_url=device.base_url, timeout=timeout)
-        # Short-timeout client for gestures (swipe/tap) — these execute fast on device
-        # but WDA can be slow to respond when app UI is heavy (e.g. TikTok)
-        self._gesture_client = httpx.Client(base_url=device.base_url, timeout=10.0)
+        # Gesture client for swipe/tap — TikTok makes WDA very slow,
+        # so we use 30s timeout instead of 10s
+        self._gesture_client = httpx.Client(base_url=device.base_url, timeout=30.0)
         self.session_id: str | None = None
         self._screen_size: dict | None = None
 
@@ -134,6 +134,14 @@ class WDASession:
         """Get app state: 1=not running, 2=bg, 3=suspended, 4=foreground."""
         resp = self.client.post(f"{self._s}/wda/apps/state", json={"bundleId": bundle_id})
         return resp.json()["value"]
+
+    def open_url(self, url: str) -> None:
+        """Open a URL on the device (e.g. itms-apps:// for App Store)."""
+        try:
+            self.client.post(f"{self._s}/url", json={"url": url})
+            logger.info("Opened URL: %s", url[:80])
+        except (httpx.ReadTimeout, httpx.ConnectTimeout):
+            logger.warning("Timeout opening URL %s (may have succeeded)", url[:80])
 
     # --- Element finding ---
 
@@ -277,6 +285,13 @@ class WDASession:
         return resp.json()["value"]
 
     # --- Keyboard ---
+
+    def type_text(self, text: str) -> None:
+        """Type text via WDA keyboard (must have keyboard visible / field focused)."""
+        try:
+            self.client.post(f"{self._s}/wda/keys", json={"value": list(text)})
+        except (httpx.ReadTimeout, httpx.ConnectTimeout):
+            logger.warning("Timeout typing text (may have succeeded)")
 
     def press_button(self, name: str) -> None:
         """Press a hardware button: 'home', 'volumeUp', 'volumeDown'."""

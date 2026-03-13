@@ -32,6 +32,12 @@ APP_NAMES: dict[str, str] = {
     "instagram": "Instagram",
 }
 
+# Direct App Store URLs (much more reliable than search)
+APP_STORE_URLS: dict[str, str] = {
+    "tiktok": "itms-apps://itunes.apple.com/app/id835599320",
+    "instagram": "itms-apps://itunes.apple.com/app/id389801252",
+}
+
 
 def reset_idfa(wda: WDASession, *, device_id: str | None = None) -> bool:
     """Reset IDFA by toggling Settings > Privacy & Security > Tracking off/on.
@@ -229,8 +235,10 @@ def install_from_app_store(
     device_id: str | None = None,
     timeout: int = 120,
 ) -> bool:
-    """Install an app from the App Store by searching for it.
+    """Install an app from the App Store.
 
+    Primary method: open App Store page via URL scheme (reliable).
+    Fallback: search-based install.
     Assumes App Store is signed in on the device.
     """
     app_name = APP_NAMES.get(platform)
@@ -242,50 +250,102 @@ def install_from_app_store(
     auto = DeviceAutomation(wda)
 
     try:
-        # Open App Store
-        wda.launch_app("com.apple.AppStore")
-        time.sleep(3)
-        auto.dismiss_popups(max_attempts=2)
+        # Primary: Use direct App Store URL scheme
+        store_url = APP_STORE_URLS.get(platform)
+        if store_url:
+            logger.info("Opening App Store page for %s via URL scheme", app_name)
+            wda.open_url(store_url)
+            time.sleep(5)
+            auto.dismiss_popups(max_attempts=2)
 
-        # Tap Search tab
-        search_tab = wda.find_element("accessibility id", "Search")
-        if search_tab:
-            wda.element_click(search_tab["ELEMENT"])
+            # Dismiss App Store onboarding if it appears
+            for _ in range(3):
+                for btn_id in [
+                    "AppStore.onboarding.continueButton",
+                    "AppStore.onboarding.turnOffButton",
+                    "Not Now",
+                ]:
+                    el = wda.find_element("accessibility id", btn_id)
+                    if el:
+                        logger.info("Dismissing App Store onboarding: %s", btn_id)
+                        wda.element_click(el["ELEMENT"])
+                        time.sleep(2)
+                        break
+                else:
+                    break
+
             time.sleep(2)
 
-        # Find search field
-        search_field = wda.find_element("class chain", "**/XCUIElementTypeSearchField")
-        if not search_field:
-            logger.error("Could not find App Store search field")
-            return False
+            # Look for GET / cloud download button on the app page
+            for label in ["GET", "Get", "INSTALL", "Install", "OPEN", "Open"]:
+                get_btn = wda.find_element("accessibility id", label)
+                if get_btn:
+                    if label.upper() == "OPEN":
+                        # Already installed
+                        logger.info("%s is already installed", app_name)
+                        wda.press_button("home")
+                        time.sleep(1)
+                        return True
+                    logger.info("Tapping '%s' for %s", label, app_name)
+                    wda.element_click(get_btn["ELEMENT"])
+                    break
+            else:
+                # Try cloud download icon (redownload from purchases)
+                cloud_btn = wda.find_element(
+                    "predicate string",
+                    'name CONTAINS "download" OR name CONTAINS "cloud" OR name CONTAINS "icloud"'
+                )
+                if cloud_btn:
+                    logger.info("Tapping cloud download for %s", app_name)
+                    wda.element_click(cloud_btn.get("ELEMENT", ""))
 
-        el_id = search_field.get("ELEMENT", "")
-        wda.element_click(el_id)
-        time.sleep(0.5)
-        wda.element_value(el_id, app_name)
-        time.sleep(1)
-
-        # Press Search on keyboard
-        # Use the keyboard search button
-        search_btn = wda.find_element("accessibility id", "search")
-        if search_btn:
-            wda.element_click(search_btn["ELEMENT"])
-        time.sleep(3)
-
-        # Look for the GET or cloud download button (redownload)
-        for label in ["GET", "Get", "INSTALL", "Install"]:
-            get_btn = wda.find_element("accessibility id", label)
-            if get_btn:
-                wda.element_click(get_btn["ELEMENT"])
-                break
         else:
-            # Try cloud icon (redownload)
-            cloud_btn = wda.find_element(
-                "predicate string",
-                'name CONTAINS "download" OR name CONTAINS "cloud"'
-            )
-            if cloud_btn:
-                wda.element_click(cloud_btn.get("ELEMENT", ""))
+            # Fallback: search-based install
+            wda.launch_app("com.apple.AppStore")
+            time.sleep(3)
+            auto.dismiss_popups(max_attempts=2)
+
+            search_tab = wda.find_element("accessibility id", "Search")
+            if not search_tab:
+                search_tab = wda.find_element(
+                    "predicate string",
+                    'label == "Search" AND type == "XCUIElementTypeButton"'
+                )
+            if search_tab:
+                wda.element_click(search_tab["ELEMENT"])
+                time.sleep(2)
+
+            search_field = wda.find_element("class chain", "**/XCUIElementTypeSearchField")
+            if not search_field:
+                time.sleep(2)
+                search_field = wda.find_element("class chain", "**/XCUIElementTypeSearchField")
+            if not search_field:
+                logger.error("Could not find App Store search field")
+                return False
+
+            el_id = search_field.get("ELEMENT", "")
+            wda.element_click(el_id)
+            time.sleep(0.5)
+            wda.element_value(el_id, app_name)
+            time.sleep(1)
+
+            search_btn = wda.find_element("accessibility id", "search")
+            if search_btn:
+                wda.element_click(search_btn["ELEMENT"])
+            time.sleep(3)
+
+            for label in ["GET", "Get", "INSTALL", "Install"]:
+                get_btn = wda.find_element("accessibility id", label)
+                if get_btn:
+                    wda.element_click(get_btn["ELEMENT"])
+                    break
+            else:
+                cloud_btn = wda.find_element(
+                    "predicate string",
+                    'name CONTAINS "download" OR name CONTAINS "cloud"'
+                )
+                if cloud_btn:
+                    wda.element_click(cloud_btn.get("ELEMENT", ""))
 
         # Wait for install to complete
         logger.info("Installing %s, waiting up to %ds...", app_name, timeout)

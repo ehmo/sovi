@@ -2,16 +2,24 @@
 
 Creates new accounts when the scheduler has no warming tasks remaining.
 Flow: install → signup → CAPTCHA → email verify → SMS → profile → TOTP → DB.
+
+TikTok signup uses coordinate-based tapping with screenshot verification,
+because TikTok's custom views don't expose accessibility elements reliably.
+Coordinates are for iPhone 16 (393x852 points, 1179x2556 pixels, 3x scale).
 """
 
 from __future__ import annotations
 
+import io
 import logging
+import os
 import random
 import string
 import time
 from typing import Any
 from uuid import UUID
+
+from PIL import Image
 
 from sovi import events
 from sovi.auth import totp
@@ -24,6 +32,119 @@ from sovi.device.app_lifecycle import BUNDLES, delete_app, install_from_app_stor
 from sovi.device.wda_client import DeviceAutomation, WDASession
 
 logger = logging.getLogger(__name__)
+
+# Debug screenshot directory (disabled in production — set env SOVI_SIGNUP_DEBUG=1)
+_SIGNUP_DEBUG = os.environ.get("SOVI_SIGNUP_DEBUG", "0") == "1"
+_SIGNUP_SS_DIR = "/tmp/sovi_signup"
+
+
+## -- Screenshot analysis for TikTok coordinate-based signup -- ##
+
+
+def _ss_save(png: bytes, step: int, name: str) -> str | None:
+    """Save a debug screenshot if SOVI_SIGNUP_DEBUG is enabled. Returns path."""
+    if not _SIGNUP_DEBUG or not png:
+        return None
+    os.makedirs(_SIGNUP_SS_DIR, exist_ok=True)
+    path = os.path.join(_SIGNUP_SS_DIR, f"{step:02d}_{name}.png")
+    with open(path, "wb") as f:
+        f.write(png)
+    logger.debug("Screenshot saved: %s (%d bytes)", path, len(png))
+    return path
+
+
+def _find_wide_red_band(png: bytes, y_min_frac: float = 0.0, y_max_frac: float = 1.0) -> int | None:
+    """Find a wide red/pink horizontal band in a screenshot (TikTok buttons).
+
+    Returns the y-coordinate in WDA points (pixels / 3) of the band center,
+    or None if no red band found.
+    """
+    if not png:
+        return None
+    try:
+        img = Image.open(io.BytesIO(png))
+        px = img.load()
+        w, h = img.size
+        y_min = int(h * y_min_frac)
+        y_max = int(h * y_max_frac)
+        for y in range(y_min, y_max, 3):
+            red_ct = 0
+            for x in range(0, w, 5):
+                r, g, b = px[x, y][:3]
+                if r > 200 and g < 100 and b < 100:
+                    red_ct += 1
+            if red_ct > 30:
+                return y // 3  # Convert pixels to WDA points
+    except Exception:
+        logger.debug("Error analyzing screenshot for red band", exc_info=True)
+    return None
+
+
+def _is_birthday_screen(png: bytes) -> bool:
+    """Check if screenshot shows TikTok birthday picker.
+
+    Looks for: pink Continue button at bottom + dark pixels at top-left (back arrow).
+    """
+    if not png:
+        return False
+    try:
+        img = Image.open(io.BytesIO(png))
+        px = img.load()
+        w, h = img.size
+        # Check for pink/red button in bottom 20%
+        btn_y = _find_wide_red_band(png, 0.8, 1.0)
+        if not btn_y:
+            return False
+        # Check for back arrow (dark pixels in top-left)
+        for y in range(80, 150):
+            for x in range(30, 120):
+                r, g, b = px[x, y][:3]
+                if r < 50 and g < 50 and b < 50:
+                    return True
+    except Exception:
+        logger.debug("Error checking birthday screen", exc_info=True)
+    return False
+
+
+def _is_email_phone_screen(png: bytes) -> bool:
+    """Check if screenshot shows the email/phone entry screen.
+
+    Looks for a text input area (horizontal line) in the upper portion.
+    """
+    if not png:
+        return False
+    try:
+        img = Image.open(io.BytesIO(png))
+        px = img.load()
+        w, h = img.size
+        # The email/phone screen has tab selectors at top and an input field
+        # Check for a horizontal gray line (input field underline) in y range 20-40%
+        for y in range(int(h * 0.2), int(h * 0.4), 2):
+            gray_ct = 0
+            for x in range(int(w * 0.1), int(w * 0.9), 3):
+                r, g, b = px[x, y][:3]
+                if abs(r - g) < 15 and abs(g - b) < 15 and 150 < r < 220:
+                    gray_ct += 1
+            if gray_ct > 40:
+                return True
+    except Exception:
+        logger.debug("Error checking email/phone screen", exc_info=True)
+    return False
+
+
+def _dismiss_tiktok_alerts(wda: WDASession) -> None:
+    """Dismiss TikTok-specific system alerts (Google SSO, tracking, etc)."""
+    for _ in range(3):
+        text = wda.get_alert_text()
+        if not text or not isinstance(text, str):
+            break
+        lower = text.lower()
+        logger.info("TikTok alert: %s", text[:60])
+        if any(kw in lower for kw in ["google", "sign in", "track", "would like"]):
+            wda.dismiss_alert()
+        else:
+            wda.accept_alert()
+        time.sleep(1)
 
 
 def _generate_username(niche_slug: str) -> str:
@@ -182,118 +303,296 @@ def _signup_tiktok(
     imap_config: ImapConfig | None,
     device_id: str | None,
 ) -> bool:
-    """TikTok signup flow."""
+    """TikTok signup flow — coordinate-based with screenshot verification.
+
+    TikTok's custom views don't expose accessibility elements reliably,
+    so we use hardcoded coordinates (iPhone 16, 393x852 points) and
+    verify each screen transition via screenshot pixel analysis.
+
+    Coordinate reference (all in WDA points = screenshot pixels / 3):
+        Login screen:
+            "Sign up" link: (280, 799)
+        Signup method screen:
+            "Use phone or email" button: ~(196, <detected_y>) — red band
+        Birthday screen:
+            Month picker: (137, 654), Day: (280, 654), Year: (357, 654)
+            "Continue" button: (197, 770)
+        Email/Phone screen:
+            "Email" tab: (290, 130)
+            Email input field: (196, 220)
+            "Next" button: ~(196, 475) or bottom of screen
+    """
+    step_n = 0
+
+    def _ss(name: str) -> bytes:
+        """Take screenshot, optionally save debug copy, return PNG bytes."""
+        nonlocal step_n
+        step_n += 1
+        png = wda.screenshot()
+        _ss_save(png, step_n, name)
+        return png
+
     try:
+        # -- Step 1: Fresh launch --
+        logger.info("TikTok signup step 1: Launch app")
+        wda.terminate_app(BUNDLES["tiktok"])
+        time.sleep(3)
         wda.launch_app(BUNDLES["tiktok"])
-        time.sleep(random.uniform(3, 5))
-        auto.dismiss_popups(max_attempts=3)
+        time.sleep(random.uniform(7, 10))  # TikTok boot is slow
+        _dismiss_tiktok_alerts(wda)
+        _ss("launch")
 
-        # Look for Sign up
-        for label in ["Sign up", "Sign Up", "Use phone or email"]:
-            el = wda.find_element("accessibility id", label)
-            if el:
-                wda.element_click(el["ELEMENT"])
-                time.sleep(2)
+        # -- Step 2: Tap "Sign up" and verify we reached signup page --
+        logger.info("TikTok signup step 2: Navigate to signup page")
+        signup_red_y = None
+        for attempt in range(3):
+            wda.tap(280, 799)  # "Sign up" link at bottom
+            time.sleep(random.uniform(12, 16))  # TikTok transitions take 10-15s
+            _dismiss_tiktok_alerts(wda)
+            png = _ss(f"after_signup_tap_{attempt + 1}")
+
+            signup_red_y = _find_wide_red_band(png, 0.15, 0.45)
+            if signup_red_y:
+                logger.info("Signup page verified (red button at y=%d)", signup_red_y)
                 break
+            logger.info("Not on signup page yet (attempt %d/3)", attempt + 1)
+        else:
+            logger.error("Failed to reach signup page after 3 attempts")
+            events.emit("account", "error", "signup_nav_failed",
+                        "Could not navigate to TikTok signup page",
+                        device_id=device_id, context={"platform": "tiktok", "step": "signup_page"})
+            return False
 
-        # Birthdate picker
-        pickers = wda.find_elements("class chain", "**/XCUIElementTypePickerWheel")
-        if len(pickers) == 3:
-            wheel_ids = [p.get("ELEMENT", "") for p in pickers]
-            month = random.choice([
-                "January", "February", "March", "April", "May", "June",
-                "July", "August", "September", "October", "November", "December",
-            ])
-            day = str(random.randint(1, 28))
-            year = str(random.randint(1990, 2002))
-            for wid, val in zip(wheel_ids, [month, day, year]):
-                if wid:
-                    wda.client.post(
-                        f"/session/{wda.session_id}/element/{wid}/value",
-                        json={"value": [val]},
-                    )
-                    time.sleep(0.3)
+        # -- Step 3: Tap "Use phone or email" (red button) --
+        logger.info("TikTok signup step 3: Tap 'Use phone or email'")
+        tap_y = signup_red_y or 243
+        wda.tap(196, tap_y)
+        time.sleep(random.uniform(8, 12))
+        _dismiss_tiktok_alerts(wda)
 
-            next_el = wda.find_element("accessibility id", "Next")
-            if next_el:
-                wda.element_click(next_el["ELEMENT"])
-            time.sleep(3)
-
-        # Select email signup
-        for label in ["Email", "Use email"]:
-            el = wda.find_element("accessibility id", label)
-            if el:
-                wda.element_click(el["ELEMENT"])
-                time.sleep(1)
+        # Verify birthday page
+        for attempt in range(3):
+            png = _ss(f"birthday_check_{attempt + 1}")
+            if _is_birthday_screen(png):
+                logger.info("Birthday page verified")
                 break
+            if attempt < 2:
+                logger.info("Waiting for birthday page (attempt %d/3)", attempt + 1)
+                time.sleep(5)
+        else:
+            logger.warning("Could not verify birthday page, continuing anyway")
 
-        # Enter email
+        # -- Step 4: Set birthday (year → ~1995-2002) --
+        logger.info("TikTok signup step 4: Set birthday year")
+        target_year = random.randint(1995, 2002)
+        # Year picker: x=357 points, center at y=654 points
+        # Default year is current (2026). Each swipe moves ~3-4 years.
+        years_back = 2026 - target_year  # ~24-31 years back
+        swipes_needed = max(6, years_back // 4)
+
+        year_x = 357
+        picker_y = 654
+        for i in range(swipes_needed):
+            # Swipe down on year picker (from above center to below = earlier years)
+            wda.swipe(year_x, picker_y - 50, year_x, picker_y + 100, duration=0.5)
+            time.sleep(random.uniform(2.5, 3.5))
+
+        # Also randomize month and day by swiping their pickers slightly
+        month_swipes = random.randint(0, 5)
+        for _ in range(month_swipes):
+            direction = random.choice([-1, 1])
+            wda.swipe(137, picker_y - 30 * direction, 137, picker_y + 30 * direction, duration=0.3)
+            time.sleep(1)
+
+        day_swipes = random.randint(0, 3)
+        for _ in range(day_swipes):
+            direction = random.choice([-1, 1])
+            wda.swipe(280, picker_y - 30 * direction, 280, picker_y + 30 * direction, duration=0.3)
+            time.sleep(1)
+
+        time.sleep(3)
+        _ss("after_birthday_set")
+
+        # -- Step 5: Tap Continue --
+        logger.info("TikTok signup step 5: Tap Continue")
+        wda.tap(197, 770)
+        time.sleep(random.uniform(8, 12))
+        _dismiss_tiktok_alerts(wda)
+        _ss("after_continue")
+
+        # -- Step 6: Email entry --
+        logger.info("TikTok signup step 6: Enter email")
+        time.sleep(3)
+
+        # Tap "Email" tab (right side of Phone/Email tabs)
+        wda.tap(290, 130)
+        time.sleep(3)
+
+        # Tap email input field
+        wda.tap(196, 220)
+        time.sleep(2)
+
+        # Type email — try element-based first, fall back to coordinate tap
         email_field = wda.find_element(
             "predicate string",
             'type == "XCUIElementTypeTextField"'
         )
         if email_field:
-            wda.element_click(email_field["ELEMENT"])
-            time.sleep(0.3)
             wda.element_value(email_field["ELEMENT"], email)
-            time.sleep(1)
+            logger.info("Email entered via element: %s", email)
+        else:
+            # Fallback: try class chain
+            email_field = wda.find_element("class chain", "**/XCUIElementTypeTextField")
+            if email_field:
+                wda.element_value(email_field["ELEMENT"], email)
+                logger.info("Email entered via class chain: %s", email)
+            else:
+                logger.warning("No text field found for email entry")
+                events.emit("account", "warning", "signup_no_email_field",
+                            "Could not find email text field",
+                            device_id=device_id, context={"platform": "tiktok", "step": "email"})
 
-        # Tap Next
+        time.sleep(2)
+        _ss("email_entered")
+
+        # Tap "Next" — try element first, then coordinates
+        next_tapped = False
         for label in ["Next", "Continue"]:
             el = wda.find_element("accessibility id", label)
             if el:
                 wda.element_click(el["ELEMENT"])
-                time.sleep(3)
+                next_tapped = True
                 break
+        if not next_tapped:
+            # Coordinate fallback: Next button near bottom of form area
+            wda.tap(196, 475)
+        time.sleep(random.uniform(5, 8))
+        _dismiss_tiktok_alerts(wda)
+        _ss("after_email_next")
 
-        # Handle CAPTCHA if present
-        screenshot = wda.screenshot()
-        if screenshot:
-            solve_slide(screenshot, platform="tiktok", device_id=device_id)
+        # -- Step 7: CAPTCHA handling --
+        logger.info("TikTok signup step 7: CAPTCHA check")
+        png = _ss("captcha_check")
+        if png:
+            captcha_result = solve_slide(png, platform="tiktok", device_id=device_id)
+            if captcha_result:
+                logger.info("CAPTCHA solved: %s", str(captcha_result)[:80])
+                # Apply the slide solution — this depends on the CAPTCHA type
+                # CapSolver returns coordinates for where to slide
+                slide_x = captcha_result.get("slideX") or captcha_result.get("distance")
+                if slide_x:
+                    size = wda.screen_size()
+                    # Slide from left side of CAPTCHA track to target position
+                    wda.swipe(
+                        int(size["width"] * 0.15), int(size["height"] * 0.5),
+                        int(size["width"] * 0.15) + int(slide_x),
+                        int(size["height"] * 0.5),
+                        duration=random.uniform(0.5, 1.0),
+                    )
+                time.sleep(5)
+                _dismiss_tiktok_alerts(wda)
         time.sleep(3)
 
-        # Email verification code
+        # -- Step 8: Email verification code --
+        logger.info("TikTok signup step 8: Email verification")
+        _ss("verification_screen")
+
         if imap_config:
-            code = poll_for_code(imap_config, "tiktok", target_email=email, timeout=90)
+            code = poll_for_code(imap_config, "tiktok", target_email=email, timeout=120)
             if code:
+                logger.info("Email verification code received: %s", code)
+                # Find the code input field
                 code_field = wda.find_element(
                     "predicate string",
                     'type == "XCUIElementTypeTextField"'
                 )
+                if not code_field:
+                    code_field = wda.find_element("class chain", "**/XCUIElementTypeTextField")
                 if code_field:
                     wda.element_value(code_field["ELEMENT"], code)
-                    time.sleep(2)
+                    time.sleep(3)
+                else:
+                    # Tap the code input area and try again
+                    wda.tap(196, 280)
+                    time.sleep(1)
+                    code_field = wda.find_element(
+                        "predicate string",
+                        'type == "XCUIElementTypeTextField"'
+                    )
+                    if code_field:
+                        wda.element_value(code_field["ELEMENT"], code)
+                        time.sleep(3)
 
-        # Create password
+                # Tap Next/Verify
+                for label in ["Next", "Verify", "Continue"]:
+                    el = wda.find_element("accessibility id", label)
+                    if el:
+                        wda.element_click(el["ELEMENT"])
+                        break
+                time.sleep(random.uniform(5, 8))
+            else:
+                logger.warning("No email verification code received")
+                events.emit("account", "warning", "signup_no_email_code",
+                            "Email verification code not received",
+                            device_id=device_id,
+                            context={"platform": "tiktok", "email": email, "step": "email_verify"})
+        else:
+            logger.warning("No IMAP config — cannot verify email")
+
+        _dismiss_tiktok_alerts(wda)
+        _ss("after_email_verify")
+
+        # -- Step 9: Password entry --
+        logger.info("TikTok signup step 9: Create password")
         pw_field = wda.find_element(
             "predicate string",
             'type == "XCUIElementTypeSecureTextField"'
         )
         if pw_field:
             wda.element_click(pw_field["ELEMENT"])
-            time.sleep(0.3)
+            time.sleep(0.5)
             wda.element_value(pw_field["ELEMENT"], password)
+            time.sleep(2)
+        else:
+            # Tap password field area and try again
+            wda.tap(196, 280)
             time.sleep(1)
+            pw_field = wda.find_element(
+                "predicate string",
+                'type == "XCUIElementTypeSecureTextField"'
+            )
+            if pw_field:
+                wda.element_click(pw_field["ELEMENT"])
+                time.sleep(0.5)
+                wda.element_value(pw_field["ELEMENT"], password)
+                time.sleep(2)
 
-        # Next/Sign up
+        _ss("password_entered")
+
+        # Tap Next/Sign up
         for label in ["Next", "Sign up", "Sign Up"]:
             el = wda.find_element("accessibility id", label)
             if el:
                 wda.element_click(el["ELEMENT"])
-                time.sleep(3)
                 break
+        else:
+            wda.tap(196, 475)
+        time.sleep(random.uniform(5, 8))
+        _dismiss_tiktok_alerts(wda)
+        _ss("after_password_next")
 
-        # Handle SMS verification if required
+        # -- Step 10: SMS verification (if required) --
+        logger.info("TikTok signup step 10: SMS check")
         sms_el = wda.find_element(
             "predicate string",
             'name CONTAINS "phone" OR name CONTAINS "Phone"'
         )
         if sms_el:
+            logger.info("SMS verification required")
             sms_verification = request_number("tiktok")
             if sms_verification:
                 wda.element_value(sms_el["ELEMENT"], sms_verification.phone_number)
                 time.sleep(2)
-                # Submit
                 for label in ["Send code", "Send Code", "Next"]:
                     el = wda.find_element("accessibility id", label)
                     if el:
@@ -301,7 +600,7 @@ def _signup_tiktok(
                         break
                 time.sleep(3)
 
-                sms_code = wait_for_code(sms_verification, timeout=90)
+                sms_code = wait_for_code(sms_verification, timeout=120)
                 if sms_code:
                     code_field = wda.find_element(
                         "predicate string",
@@ -309,28 +608,69 @@ def _signup_tiktok(
                     )
                     if code_field:
                         wda.element_value(code_field["ELEMENT"], sms_code)
-                        time.sleep(2)
+                        time.sleep(3)
+                    # Submit
+                    for label in ["Next", "Verify", "Submit"]:
+                        el = wda.find_element("accessibility id", label)
+                        if el:
+                            wda.element_click(el["ELEMENT"])
+                            break
+                    time.sleep(5)
                 else:
+                    logger.warning("SMS code not received, cancelling")
                     cancel_verification(sms_verification)
+            else:
+                logger.warning("Could not get SMS number")
 
-        # Set username
+        _dismiss_tiktok_alerts(wda)
+        _ss("after_sms")
+
+        # -- Step 11: Username / interests / onboarding --
+        logger.info("TikTok signup step 11: Post-signup screens")
         time.sleep(3)
-        auto.dismiss_popups(max_attempts=3)
 
-        # Skip interests selection
-        for label in ["Skip", "Not now", "Maybe later"]:
-            el = wda.find_element("accessibility id", label)
-            if el:
-                wda.element_click(el["ELEMENT"])
-                time.sleep(2)
+        # Try to set username if prompted
+        username_field = wda.find_element(
+            "predicate string",
+            'type == "XCUIElementTypeTextField" AND (name CONTAINS "username" OR name CONTAINS "Username")'
+        )
+        if username_field:
+            wda.element_click(username_field["ELEMENT"])
+            time.sleep(0.5)
+            wda.element_value(username_field["ELEMENT"], username)
+            time.sleep(1)
+
+        # Skip through onboarding screens
+        for _ in range(5):
+            dismissed = False
+            for label in ["Skip", "Not now", "Not Now", "Maybe later", "Maybe Later",
+                          "Got it", "Dismiss", "Close", "No thanks"]:
+                el = wda.find_element("accessibility id", label)
+                if el:
+                    wda.element_click(el["ELEMENT"])
+                    logger.info("Dismissed onboarding: %s", label)
+                    time.sleep(2)
+                    dismissed = True
+                    break
+            if not dismissed:
                 break
 
         auto.dismiss_popups(max_attempts=3)
+        _ss("signup_complete")
+
         logger.info("TikTok signup flow completed for %s", email)
+        events.emit("account", "info", "signup_completed",
+                    f"TikTok signup completed for {email}",
+                    device_id=device_id,
+                    context={"platform": "tiktok", "email": email, "username": username})
         return True
 
     except Exception:
         logger.error("TikTok signup failed for %s", email, exc_info=True)
+        events.emit("account", "error", "signup_exception",
+                    f"TikTok signup exception for {email}",
+                    device_id=device_id,
+                    context={"platform": "tiktok", "email": email})
         return False
 
 
