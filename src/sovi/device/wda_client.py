@@ -45,7 +45,9 @@ class WDASession:
 
     def connect(self) -> None:
         """Create a WDA session and cache screen size."""
-        resp = self.client.post("/session", json={"capabilities": {"alwaysMatch": {}}})
+        resp = self.client.post("/session", json={
+            "capabilities": {"alwaysMatch": {"shouldWaitForQuiescence": False}}
+        })
         data = resp.json()
         self.session_id = data.get("sessionId") or data.get("value", {}).get("sessionId")
         if not self.session_id:
@@ -182,10 +184,48 @@ class WDASession:
         """Type into an element."""
         self.client.post(f"{self._s}/element/{element_id}/value", json={"value": list(text)})
 
+    def element_clear(self, element_id: str) -> None:
+        """Clear an element's text content."""
+        self.client.post(f"{self._s}/element/{element_id}/clear")
+
+    def drag(
+        self, from_x: int, from_y: int, to_x: int, to_y: int,
+        duration: float = 0.5, timeout: float | None = None,
+    ) -> None:
+        """Drag gesture with optional custom timeout.
+
+        Uses WDA's dragfromtoforduration. The gesture executes immediately
+        but TikTok's quiescence issues cause the HTTP response to take ~57s.
+        Use a short timeout (e.g. 5s) when you know the gesture will execute
+        faster than the response arrives.
+        """
+        client = self._gesture_client
+        if timeout is not None:
+            client = httpx.Client(base_url=self.device.base_url, timeout=timeout)
+        try:
+            client.post(
+                f"{self._s}/wda/dragfromtoforduration",
+                json={
+                    "fromX": from_x, "fromY": from_y,
+                    "toX": to_x, "toY": to_y,
+                    "duration": duration,
+                },
+            )
+        except (httpx.ReadTimeout, httpx.ConnectTimeout):
+            logger.debug("Timeout on drag — gesture likely executed")
+        finally:
+            if timeout is not None:
+                client.close()
+
     # --- Touch / gestures ---
 
-    def tap(self, x: int, y: int) -> None:
-        """Tap at coordinates using W3C actions."""
+    def tap(self, x: int, y: int, duration: int = 500) -> None:
+        """Tap at coordinates using W3C actions.
+
+        Args:
+            duration: press hold time in ms. TikTok's custom views need >=500ms
+                      to register a tap; shorter durations are silently ignored.
+        """
         try:
             self._gesture_client.post(f"{self._s}/actions", json={
                 "actions": [{
@@ -195,7 +235,7 @@ class WDASession:
                     "actions": [
                         {"type": "pointerMove", "duration": 0, "x": x, "y": y},
                         {"type": "pointerDown", "button": 0},
-                        {"type": "pause", "duration": 50},
+                        {"type": "pause", "duration": duration},
                         {"type": "pointerUp", "button": 0},
                     ],
                 }],

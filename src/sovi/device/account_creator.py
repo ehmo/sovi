@@ -23,7 +23,7 @@ from PIL import Image
 
 from sovi import events
 from sovi.auth import totp
-from sovi.auth.captcha_solver import solve_slide
+from sovi.auth.captcha_solver import detect_captcha_popup, solve_puzzle_local, solve_slide
 from sovi.auth.email_verifier import ImapConfig, poll_for_code
 from sovi.auth.sms_verifier import cancel_verification, request_number, wait_for_code
 from sovi.crypto import encrypt
@@ -56,7 +56,7 @@ def _ss_save(png: bytes, step: int, name: str) -> str | None:
 def _find_wide_red_band(png: bytes, y_min_frac: float = 0.0, y_max_frac: float = 1.0) -> int | None:
     """Find a wide red/pink horizontal band in a screenshot (TikTok buttons).
 
-    Returns the y-coordinate in WDA points (pixels / 3) of the band center,
+    Returns the y-coordinate in WDA points (pixels / 3) of the band CENTER,
     or None if no red band found.
     """
     if not png:
@@ -67,6 +67,8 @@ def _find_wide_red_band(png: bytes, y_min_frac: float = 0.0, y_max_frac: float =
         w, h = img.size
         y_min = int(h * y_min_frac)
         y_max = int(h * y_max_frac)
+        band_start = None
+        band_end = None
         for y in range(y_min, y_max, 3):
             red_ct = 0
             for x in range(0, w, 5):
@@ -74,16 +76,60 @@ def _find_wide_red_band(png: bytes, y_min_frac: float = 0.0, y_max_frac: float =
                 if r > 200 and g < 100 and b < 100:
                     red_ct += 1
             if red_ct > 30:
-                return y // 3  # Convert pixels to WDA points
+                if band_start is None:
+                    band_start = y
+                band_end = y
+            elif band_start is not None:
+                # End of band — return center
+                break
+        if band_start is not None and band_end is not None:
+            center_y = (band_start + band_end) // 2
+            return center_y // 3  # Convert pixels to WDA points
     except Exception:
         logger.debug("Error analyzing screenshot for red band", exc_info=True)
+    return None
+
+
+def _find_wide_pink_band(png: bytes, y_min_frac: float = 0.0, y_max_frac: float = 1.0) -> int | None:
+    """Find a wide pink/light-red horizontal band (TikTok's disabled-state buttons).
+
+    The birthday page's Continue button is pink (255,171,187) not red.
+    Returns center y in WDA points, or None.
+    """
+    if not png:
+        return None
+    try:
+        img = Image.open(io.BytesIO(png))
+        px = img.load()
+        w, h = img.size
+        y_min = int(h * y_min_frac)
+        y_max = int(h * y_max_frac)
+        band_start = None
+        band_end = None
+        for y in range(y_min, y_max, 3):
+            pink_ct = 0
+            for x in range(0, w, 5):
+                r, g, b = px[x, y][:3]
+                # Match both red (r>200,g<100,b<100) and pink (r>220,g>120,b>140)
+                if r > 220 and (g < 100 or (120 < g < 200 and 140 < b < 210)):
+                    pink_ct += 1
+            if pink_ct > 30:
+                if band_start is None:
+                    band_start = y
+                band_end = y
+            elif band_start is not None:
+                break
+        if band_start is not None and band_end is not None:
+            return (band_start + band_end) // 2 // 3
+    except Exception:
+        pass
     return None
 
 
 def _is_birthday_screen(png: bytes) -> bool:
     """Check if screenshot shows TikTok birthday picker.
 
-    Looks for: pink Continue button at bottom + dark pixels at top-left (back arrow).
+    Looks for: pink/red Continue button at bottom + dark pixels at top-left (back arrow).
     """
     if not png:
         return False
@@ -91,13 +137,13 @@ def _is_birthday_screen(png: bytes) -> bool:
         img = Image.open(io.BytesIO(png))
         px = img.load()
         w, h = img.size
-        # Check for pink/red button in bottom 20%
-        btn_y = _find_wide_red_band(png, 0.8, 1.0)
+        # Check for pink or red button in bottom 25%
+        btn_y = _find_wide_red_band(png, 0.75, 1.0) or _find_wide_pink_band(png, 0.75, 1.0)
         if not btn_y:
             return False
-        # Check for back arrow (dark pixels in top-left)
-        for y in range(80, 150):
-            for x in range(30, 120):
+        # Check for back arrow (dark pixels in top-left quadrant)
+        for y in range(50, 250):
+            for x in range(20, 250):
                 r, g, b = px[x, y][:3]
                 if r < 50 and g < 50 and b < 50:
                     return True
@@ -338,7 +384,7 @@ def _signup_tiktok(
         wda.terminate_app(BUNDLES["tiktok"])
         time.sleep(3)
         wda.launch_app(BUNDLES["tiktok"])
-        time.sleep(random.uniform(7, 10))  # TikTok boot is slow
+        time.sleep(random.uniform(15, 20))  # TikTok boot is very slow
         _dismiss_tiktok_alerts(wda)
         _ss("launch")
 
@@ -346,14 +392,14 @@ def _signup_tiktok(
         logger.info("TikTok signup step 2: Navigate to signup page")
         signup_red_y = None
         for attempt in range(3):
-            wda.tap(280, 799)  # "Sign up" link at bottom
-            time.sleep(random.uniform(12, 16))  # TikTok transitions take 10-15s
+            wda.tap(283, 799)  # "Sign up" link at bottom
+            time.sleep(random.uniform(15, 20))  # TikTok transitions need 10-15s
             _dismiss_tiktok_alerts(wda)
             png = _ss(f"after_signup_tap_{attempt + 1}")
 
-            signup_red_y = _find_wide_red_band(png, 0.15, 0.45)
+            signup_red_y = _find_wide_red_band(png, 0.15, 0.50)
             if signup_red_y:
-                logger.info("Signup page verified (red button at y=%d)", signup_red_y)
+                logger.info("Signup page verified (red button center at y=%d)", signup_red_y)
                 break
             logger.info("Not on signup page yet (attempt %d/3)", attempt + 1)
         else:
@@ -367,7 +413,7 @@ def _signup_tiktok(
         logger.info("TikTok signup step 3: Tap 'Use phone or email'")
         tap_y = signup_red_y or 243
         wda.tap(196, tap_y)
-        time.sleep(random.uniform(8, 12))
+        time.sleep(random.uniform(12, 16))
         _dismiss_tiktok_alerts(wda)
 
         # Verify birthday page
@@ -378,7 +424,7 @@ def _signup_tiktok(
                 break
             if attempt < 2:
                 logger.info("Waiting for birthday page (attempt %d/3)", attempt + 1)
-                time.sleep(5)
+                time.sleep(8)
         else:
             logger.warning("Could not verify birthday page, continuing anyway")
 
@@ -415,8 +461,13 @@ def _signup_tiktok(
 
         # -- Step 5: Tap Continue --
         logger.info("TikTok signup step 5: Tap Continue")
-        wda.tap(197, 770)
-        time.sleep(random.uniform(8, 12))
+        # Detect Continue button position (pink band at bottom of birthday page)
+        continue_y = _find_wide_pink_band(png, 0.75, 1.0) or _find_wide_red_band(png, 0.75, 1.0)
+        if continue_y:
+            wda.tap(197, continue_y)
+        else:
+            wda.tap(197, 720)  # Fallback: approximate center of Continue button
+        time.sleep(random.uniform(12, 16))
         _dismiss_tiktok_alerts(wda)
         _ss("after_continue")
 
@@ -428,61 +479,111 @@ def _signup_tiktok(
         wda.tap(290, 130)
         time.sleep(3)
 
-        # Tap email input field
-        wda.tap(196, 220)
-        time.sleep(2)
-
-        # Type email — try element-based first, fall back to coordinate tap
+        # Find and clear email field, then type email
         email_field = wda.find_element(
             "predicate string",
             'type == "XCUIElementTypeTextField"'
-        )
+        ) or wda.find_element("class chain", "**/XCUIElementTypeTextField")
+
         if email_field:
-            wda.element_value(email_field["ELEMENT"], email)
-            logger.info("Email entered via element: %s", email)
+            el_id = email_field["ELEMENT"]
+            # Tap to focus, clear any autocomplete/existing text, then type
+            wda.element_click(el_id)
+            time.sleep(1)
+            wda.element_clear(el_id)
+            time.sleep(0.5)
+            # Use wda/keys (character-by-character) to avoid autocomplete issues
+            wda.type_text(email)
+            logger.info("Email entered: %s", email)
         else:
-            # Fallback: try class chain
-            email_field = wda.find_element("class chain", "**/XCUIElementTypeTextField")
-            if email_field:
-                wda.element_value(email_field["ELEMENT"], email)
-                logger.info("Email entered via class chain: %s", email)
-            else:
-                logger.warning("No text field found for email entry")
-                events.emit("account", "warning", "signup_no_email_field",
-                            "Could not find email text field",
-                            device_id=device_id, context={"platform": "tiktok", "step": "email"})
+            # Fallback: tap field coordinates and type via keyboard
+            wda.tap(196, 220)
+            time.sleep(2)
+            wda.type_text(email)
+            logger.info("Email entered via keyboard fallback: %s", email)
 
         time.sleep(2)
         _ss("email_entered")
 
-        # Tap "Next" — try element first, then coordinates
-        next_tapped = False
-        for label in ["Next", "Continue"]:
-            el = wda.find_element("accessibility id", label)
-            if el:
-                wda.element_click(el["ELEMENT"])
-                next_tapped = True
-                break
-        if not next_tapped:
-            # Coordinate fallback: Next button near bottom of form area
-            wda.tap(196, 475)
+        # Dismiss any autocomplete suggestions by tapping outside
+        wda.tap(196, 350)
+        time.sleep(0.5)
+
+        # Tap "Next" / "Continue" — try red/pink band detection first
+        png = _ss("before_email_next")
+        continue_y = _find_wide_red_band(png, 0.3, 0.6) or _find_wide_pink_band(png, 0.3, 0.6)
+        if continue_y:
+            wda.tap(196, continue_y)
+        else:
+            # Try element-based, then coordinate fallback
+            next_tapped = False
+            for label in ["Next", "Continue"]:
+                el = wda.find_element("accessibility id", label)
+                if el:
+                    wda.element_click(el["ELEMENT"])
+                    next_tapped = True
+                    break
+            if not next_tapped:
+                wda.tap(196, 449)  # Known Continue button position
         time.sleep(random.uniform(5, 8))
         _dismiss_tiktok_alerts(wda)
         _ss("after_email_next")
 
         # -- Step 7: CAPTCHA handling --
         logger.info("TikTok signup step 7: CAPTCHA check")
-        png = _ss("captcha_check")
-        if png:
+
+        for captcha_round in range(10):
+            time.sleep(3)
+            png = _ss(f"captcha_check_{captcha_round + 1}")
+            if not png:
+                break
+
+            # Detect puzzle CAPTCHA popup
+            puzzle = solve_puzzle_local(png)
+            if puzzle:
+                slider_y = puzzle["slider_y"]
+                start_x = puzzle["slider_start_x"]
+                popup_w = puzzle["popup_width"]
+                targets = puzzle["targets"]
+
+                logger.info(
+                    "Puzzle CAPTCHA #%d: slider_y=%d, start_x=%d, targets=%s",
+                    captcha_round + 1, slider_y, start_x,
+                    [f"{t:.0%}" for t in targets[:5]],
+                )
+
+                # Try each target position until CAPTCHA clears
+                solved = False
+                for target_pct in targets[:8]:
+                    target_x = start_x + int(popup_w * target_pct)
+                    wda.drag(
+                        start_x, slider_y, target_x, slider_y,
+                        duration=random.uniform(0.3, 0.7),
+                        timeout=5.0,
+                    )
+                    time.sleep(3)
+
+                    verify_png = _ss(f"captcha_verify_{captcha_round}_{target_pct:.0%}")
+                    if not detect_captcha_popup(verify_png):
+                        logger.info(
+                            "Puzzle CAPTCHA solved at %.0f%% on round %d",
+                            target_pct * 100, captcha_round + 1,
+                        )
+                        solved = True
+                        break
+
+                if solved:
+                    continue  # Check if another CAPTCHA appears
+                logger.warning("Failed to solve puzzle CAPTCHA round %d", captcha_round + 1)
+                continue
+
+            # Fall back to CapSolver API for slide/other CAPTCHA types
             captcha_result = solve_slide(png, platform="tiktok", device_id=device_id)
             if captcha_result:
-                logger.info("CAPTCHA solved: %s", str(captcha_result)[:80])
-                # Apply the slide solution — this depends on the CAPTCHA type
-                # CapSolver returns coordinates for where to slide
+                logger.info("CAPTCHA solved via API: %s", str(captcha_result)[:80])
                 slide_x = captcha_result.get("slideX") or captcha_result.get("distance")
                 if slide_x:
                     size = wda.screen_size()
-                    # Slide from left side of CAPTCHA track to target position
                     wda.swipe(
                         int(size["width"] * 0.15), int(size["height"] * 0.5),
                         int(size["width"] * 0.15) + int(slide_x),
@@ -490,8 +591,13 @@ def _signup_tiktok(
                         duration=random.uniform(0.5, 1.0),
                     )
                 time.sleep(5)
-                _dismiss_tiktok_alerts(wda)
-        time.sleep(3)
+                continue
+
+            # No CAPTCHA detected — passed through
+            logger.info("No CAPTCHA detected, proceeding")
+            break
+
+        _dismiss_tiktok_alerts(wda)
 
         # -- Step 8: Email verification code --
         logger.info("TikTok signup step 8: Email verification")
