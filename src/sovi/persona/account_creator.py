@@ -67,8 +67,9 @@ def create_account_for_persona(
     email_account_id = str(email_row["id"])
 
     # Build email verification config based on provider
-    if email_row.get("provider") == "mailtm":
-        # mail.tm uses REST API — pass None for imap_config, use API-based polling
+    provider = email_row.get("provider", "")
+    if provider in ("mailtm", "protonmail"):
+        # mail.tm uses REST API, ProtonMail has no IMAP without Bridge
         imap_config = None
     else:
         imap_config = ImapConfig(
@@ -84,7 +85,7 @@ def create_account_for_persona(
                 context={"persona_id": persona_id, "platform": platform})
 
     # For mail.tm accounts, pass the email password for API-based code polling
-    email_pw = password if email_row.get("provider") == "mailtm" else None
+    email_pw = password if provider == "mailtm" else None
 
     if platform in APP_PLATFORMS:
         result = _create_app_account(wda, persona, platform, email, password, imap_config, device_id, email_password=email_pw)

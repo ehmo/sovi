@@ -571,7 +571,18 @@ def _signup_tiktok(
                     )
                     time.sleep(3)
 
-                    verify_png = _ss(f"captcha_verify_{captcha_round}_{target_pct:.0%}")
+                    # Retry screenshot up to 3 times (WDA timeouts common with TikTok)
+                    verify_png = None
+                    for _retry in range(3):
+                        verify_png = _ss(f"captcha_verify_{captcha_round}_{target_pct:.0%}")
+                        if verify_png:
+                            break
+                        time.sleep(2)
+
+                    if not verify_png:
+                        logger.warning("Screenshot timeout after drag — cannot verify, trying next target")
+                        continue
+
                     if not detect_captcha_popup(verify_png):
                         logger.info(
                             "Puzzle CAPTCHA solved at %.0f%% on round %d",
