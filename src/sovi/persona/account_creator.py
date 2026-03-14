@@ -157,8 +157,8 @@ def _create_web_account(
     """Create account via Safari web signup."""
     auto = DeviceAutomation(wda)
 
-    # Rotate IP
-    wda.toggle_airplane_mode()
+    # Skip airplane mode toggle for web signup — it disconnects WDA
+    # IP rotation is handled externally if needed
 
     if platform == "reddit":
         return _signup_reddit(wda, auto, persona, email, password, device_id)
