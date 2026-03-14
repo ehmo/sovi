@@ -192,27 +192,54 @@ def _extract_service_config(page) -> dict | None:
 
 
 def _extract_store_data(page) -> dict | None:
-    """Extract account data from NgRx store."""
+    """Extract account data from NgRx store using Angular's helper.getUserInfoFrom().
+
+    The API expects a nested structure with fields like givenName, familyName,
+    credentials.password, address.countryCode — NOT the flat store field names.
+    """
     data = page.evaluate("""(() => {
         try {
             var t = getAllAngularTestabilities()[0];
             var store = null;
+            var effectSvc = null;
             t._destroyRef.records.forEach(function(v, k) {
-                if (v && v.value && typeof v.value.dispatch === 'function') store = v.value;
+                if (!v || !v.value) return;
+                if (typeof v.value.dispatch === 'function') store = v.value;
+                try {
+                    if (Object.keys(v.value).indexOf('submitFreemail') >= 0) effectSvc = v.value;
+                } catch(e) {}
             });
             var src = store.source;
             while (src && !src._value && src.source) src = src.source;
             var state = src._value;
-            return {
-                emailAddress: state.aliasCheck?.selectedMailAddress,
-                password: state.passwordGroup?.password?.value,
-                firstName: state.personalInfoGroup?.firstName?.value,
-                lastName: state.personalInfoGroup?.lastName?.value,
-                dateOfBirth: state.personalInfoGroup?.dateOfBirth?.value,
-                salutation: state.personalInfoGroup?.salutation?.value,
-                country: state.personalInfoGroup?.address?.country?.value,
-                region: state.personalInfoGroup?.address?.region?.value
-            };
+
+            var accountData;
+            if (effectSvc && effectSvc.helper) {
+                // Use Angular's helper for the correct nested format
+                accountData = effectSvc.helper.getUserInfoFrom(
+                    state.passwordGroup,
+                    state.personalInfoGroup,
+                    state.paymentGroup,
+                    state.passwordRecoveryGroup
+                );
+            } else {
+                // Fallback: build correct nested format manually
+                accountData = {
+                    givenName: state.personalInfoGroup?.firstName?.value,
+                    familyName: state.personalInfoGroup?.lastName?.value,
+                    gender: state.personalInfoGroup?.salutation?.value,
+                    birthDate: state.personalInfoGroup?.dateOfBirth?.value,
+                    address: {
+                        countryCode: state.personalInfoGroup?.address?.country?.value,
+                        region: state.personalInfoGroup?.address?.region?.value,
+                    },
+                    credentials: {
+                        password: state.passwordGroup?.password?.value,
+                    },
+                };
+            }
+            accountData.emailAddress = state.aliasCheck?.selectedMailAddress;
+            return accountData;
         } catch(e) {
             return null;
         }
