@@ -302,25 +302,36 @@ def _signup_reddit(
         # Log out of any existing Reddit session
         _logout_reddit(wda)
 
-        open_safari(wda, "https://www.reddit.com/register")
+        # Try loading register page with retry on failure
+        email_field = None
+        for load_attempt in range(2):
+            if load_attempt > 0:
+                logger.info("Retrying register page load (attempt %d)...", load_attempt + 1)
+                close_safari(wda)
+                time.sleep(5)
 
-        # Wait for page to load — don't call dismiss_popups here because
-        # it would click Reddit's "Close" (X) button and close the signup modal
-        time.sleep(5)
+            open_safari(wda, "https://www.reddit.com/register")
 
-        # Only dismiss system alerts (not in-app buttons)
-        alert = wda.get_alert_text()
-        if alert:
-            wda.accept_alert()
-            time.sleep(1)
+            # Wait for page to load — don't call dismiss_popups here because
+            # it would click Reddit's "Close" (X) button and close the signup modal
+            time.sleep(5)
 
-        email_field = _wait_for_element(
-            wda, "predicate string",
-            'type == "XCUIElementTypeTextField" AND (name CONTAINS[c] "email")',
-            timeout=15, label="Reddit email field",
-        )
+            # Only dismiss system alerts (not in-app buttons)
+            alert = wda.get_alert_text()
+            if alert:
+                wda.accept_alert()
+                time.sleep(1)
+
+            email_field = _wait_for_element(
+                wda, "predicate string",
+                'type == "XCUIElementTypeTextField" AND (name CONTAINS[c] "email" OR label CONTAINS[c] "email")',
+                timeout=15, label="Reddit email field",
+            )
+            if email_field:
+                break
+
         if not email_field:
-            logger.error("Reddit signup page didn't load — email field not found")
+            logger.error("Reddit signup page didn't load — email field not found after retries")
             close_safari(wda)
             return None
 

@@ -113,9 +113,21 @@ def create_on_phone(phone_key: str, persona: dict, platform: str) -> dict | None
     return result
 
 
-def run_sequential(personas: list[dict], platform: str, phone_key: str) -> dict:
+PLATFORM_DELAYS = {
+    "reddit": 45,
+    "tiktok": 15,
+    "instagram": 30,
+    "x_twitter": 30,
+    "facebook": 20,
+    "linkedin": 20,
+    "youtube_shorts": 20,
+}
+
+
+def run_sequential(personas: list[dict], platform: str, phone_key: str, delay: int = 0) -> dict:
     """Run account creation sequentially on one phone."""
     stats = {"success": 0, "fail": 0, "total": len(personas)}
+    inter_delay = delay or PLATFORM_DELAYS.get(platform, 15)
 
     for i, persona in enumerate(personas):
         logger.info(
@@ -128,16 +140,14 @@ def run_sequential(personas: list[dict], platform: str, phone_key: str) -> dict:
         else:
             stats["fail"] += 1
 
-        # Brief pause between accounts (IP rotation happens inside signup)
         if i < len(personas) - 1:
-            delay = 10
-            logger.info("Waiting %ds before next account...", delay)
-            time.sleep(delay)
+            logger.info("Waiting %ds before next account...", inter_delay)
+            time.sleep(inter_delay)
 
     return stats
 
 
-def run_parallel(personas: list[dict], platform: str) -> dict:
+def run_parallel(personas: list[dict], platform: str, delay: int = 0) -> dict:
     """Run account creation on both phones in parallel.
 
     Alternates personas between phones. Each phone processes sequentially.
@@ -155,9 +165,9 @@ def run_parallel(personas: list[dict], platform: str) -> dict:
     with ThreadPoolExecutor(max_workers=2) as executor:
         futures = {}
         if phone_a_personas:
-            futures[executor.submit(run_sequential, phone_a_personas, platform, "a")] = "a"
+            futures[executor.submit(run_sequential, phone_a_personas, platform, "a", delay)] = "a"
         if phone_b_personas:
-            futures[executor.submit(run_sequential, phone_b_personas, platform, "b")] = "b"
+            futures[executor.submit(run_sequential, phone_b_personas, platform, "b", delay)] = "b"
 
         for future in as_completed(futures):
             phone = futures[future]
@@ -181,6 +191,7 @@ def main():
     parser.add_argument("--limit", type=int, default=0, help="Max accounts to create (0=all)")
     parser.add_argument("--niche", help="Only create for this niche slug")
     parser.add_argument("--dry-run", action="store_true", help="Show what would be created")
+    parser.add_argument("--delay", type=int, default=0, help="Seconds between signups (default: platform-specific)")
     args = parser.parse_args()
 
     if not args.platform and not args.all:
@@ -218,9 +229,9 @@ def main():
             continue
 
         if args.parallel:
-            stats = run_parallel(personas, platform)
+            stats = run_parallel(personas, platform, delay=args.delay)
         else:
-            stats = run_sequential(personas, platform, args.phone)
+            stats = run_sequential(personas, platform, args.phone, delay=args.delay)
 
         logger.info(
             "=== %s COMPLETE: %d/%d success, %d failed ===",
