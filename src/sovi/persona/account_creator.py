@@ -299,8 +299,16 @@ def _signup_reddit(
     username = _derive_username(persona, "reddit")
 
     try:
+        # Kill any existing Safari session to start fresh
+        close_safari(wda)
+        time.sleep(1)
+
         # Log out of any existing Reddit session
         _logout_reddit(wda)
+
+        # If logout failed, force-kill Safari to avoid stale session
+        close_safari(wda)
+        time.sleep(2)
 
         # Try loading register page with retry on failure
         email_field = None
