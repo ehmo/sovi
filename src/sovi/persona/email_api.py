@@ -261,6 +261,16 @@ def poll_for_code_mailtm(
                 if platform_senders and not any(s in sender for s in platform_senders):
                     continue
 
+                # Check subject line first (most reliable — less noise)
+                subject = msg.get("subject", "")
+                for pattern in platform_patterns:
+                    match = pattern.search(subject)
+                    if match:
+                        code = match.group(1)
+                        logger.info("Found %s code in subject: %s (from %s)", platform, code, sender)
+                        return code
+
+                # Fall back to message body
                 body = read_message_body(address, password, msg_id)
                 if not body:
                     continue
@@ -269,7 +279,7 @@ def poll_for_code_mailtm(
                     match = pattern.search(body)
                     if match:
                         code = match.group(1)
-                        logger.info("Found %s code: %s (from %s)", platform, code, sender)
+                        logger.info("Found %s code in body: %s (from %s)", platform, code, sender)
                         return code
 
         except Exception:

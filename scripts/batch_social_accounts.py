@@ -45,13 +45,18 @@ WEB_PLATFORMS = {"reddit", "youtube_shorts", "facebook", "linkedin"}
 
 
 def get_personas_needing_platform(platform: str) -> list[dict]:
-    """Get personas that don't have an account on this platform yet."""
+    """Get personas that have an email account but don't have a platform account yet."""
     rows = sync_execute(
         """SELECT p.id, p.first_name, p.last_name, p.display_name,
                   p.username_base, p.gender, p.date_of_birth, p.niche_id,
                   p.bio_short, p.occupation, p.interests, p.personality
            FROM personas p
            WHERE p.status IN ('active', 'ready')
+             AND EXISTS (
+                 SELECT 1 FROM email_accounts ea
+                 WHERE ea.persona_id = p.id
+                   AND ea.status = 'available'
+             )
              AND NOT EXISTS (
                  SELECT 1 FROM accounts a
                  WHERE a.persona_id = p.id

@@ -161,7 +161,7 @@ def _create_web_account(
     # IP rotation is handled externally if needed
 
     if platform == "reddit":
-        return _signup_reddit(wda, auto, persona, email, password, device_id)
+        return _signup_reddit(wda, auto, persona, email, password, device_id, email_password=email_password)
     elif platform == "youtube_shorts":
         return _signup_youtube(wda, auto, persona, email, password, device_id)
     elif platform == "facebook":
@@ -172,15 +172,14 @@ def _create_web_account(
 
 
 def _derive_username(persona: dict, platform: str) -> str:
-    """Derive a platform-specific username from persona's username_base."""
-    base = persona.get("username_base", "user123")
-    suffixes = {
-        "reddit": "",
-        "youtube_shorts": "",
-        "facebook": "",
-        "linkedin": "",
-    }
-    return base.replace(".", "_") + suffixes.get(platform, "")
+    """Derive a platform-specific username from persona's username_base.
+
+    Adds random digits to avoid collisions on platforms with taken usernames.
+    """
+    import random
+    base = persona.get("username_base", "user123").replace(".", "_")
+    suffix = str(random.randint(100, 9999))
+    return base + suffix
 
 
 def _store_account(
@@ -214,6 +213,74 @@ def _store_account(
     return rows[0] if rows else None
 
 
+def _get_element_rect(wda: WDASession, element_id: str) -> dict | None:
+    """Get element bounding rect {x, y, width, height} via WDA."""
+    try:
+        resp = wda.client.get(f"{wda._s}/element/{element_id}/rect")
+        return resp.json().get("value")
+    except Exception:
+        return None
+
+
+def _logout_reddit(wda: WDASession) -> bool:
+    """Log out of Reddit in Safari by tapping user avatar → Log Out.
+
+    Returns True if logout was performed (or user wasn't logged in).
+    """
+    try:
+        open_safari(wda, "https://www.reddit.com/")
+        time.sleep(6)  # Extra time for page to fully render
+
+        # Dismiss any "Sign in with Google" or cookie popups first
+        alert = wda.get_alert_text()
+        if alert:
+            wda.accept_alert()
+            time.sleep(1)
+
+        # Check if logged in by looking for "Expand user menu" avatar
+        avatar = wda.find_element(
+            "predicate string",
+            'name CONTAINS[c] "Expand user menu"',
+        )
+        if not avatar:
+            logger.info("Not logged into Reddit — no logout needed")
+            return True
+
+        # Try tapping the avatar up to 2 times (use short 100ms press for web)
+        for attempt in range(2):
+            wda.tap(361, 86, duration=100)
+            time.sleep(3)
+
+            logout = wda.find_element("predicate string", 'name == "Log Out"')
+            if not logout:
+                logout = wda.find_element(
+                    "predicate string",
+                    'name CONTAINS[c] "Log Out"',
+                )
+            if logout:
+                rect = _get_element_rect(wda, logout["ELEMENT"])
+                if rect and rect["y"] >= 0:
+                    wda.tap(
+                        rect["x"] + rect["width"] // 2,
+                        rect["y"] + rect["height"] // 2,
+                        duration=100,
+                    )
+                else:
+                    wda.element_click(logout["ELEMENT"])
+                time.sleep(3)
+                logger.info("Logged out of Reddit (attempt %d)", attempt + 1)
+                return True
+
+            if attempt == 0:
+                logger.debug("Log Out not found, retrying avatar tap...")
+
+        logger.warning("Log Out button not found after 2 attempts")
+        return False
+    except Exception:
+        logger.warning("Reddit logout failed", exc_info=True)
+        return False
+
+
 def _signup_reddit(
     wda: WDASession,
     auto: DeviceAutomation,
@@ -221,41 +288,99 @@ def _signup_reddit(
     email: str,
     password: str,
     device_id: str | None,
+    *,
+    email_password: str | None = None,
 ) -> dict | None:
-    """Reddit signup flow via Safari."""
+    """Reddit signup flow via Safari.
+
+    Multi-step: email → verify code → username/password → done.
+    Uses mail.tm API to fetch verification codes.
+    """
     username = _derive_username(persona, "reddit")
 
     try:
+        # Log out of any existing Reddit session
+        _logout_reddit(wda)
+
         open_safari(wda, "https://www.reddit.com/register")
+
+        # Wait for page to load — don't call dismiss_popups here because
+        # it would click Reddit's "Close" (X) button and close the signup modal
+        time.sleep(5)
+
+        # Only dismiss system alerts (not in-app buttons)
+        alert = wda.get_alert_text()
+        if alert:
+            wda.accept_alert()
+            time.sleep(1)
+
+        email_field = _wait_for_element(
+            wda, "predicate string",
+            'type == "XCUIElementTypeTextField" AND (name CONTAINS[c] "email")',
+            timeout=15, label="Reddit email field",
+        )
+        if not email_field:
+            logger.error("Reddit signup page didn't load — email field not found")
+            close_safari(wda)
+            return None
+
+        # Step 1: Enter email
+        wda.element_click(email_field["ELEMENT"])
+        auto.human_delay()
+        wda.type_text(email)
+        time.sleep(1)
+
+        if not _click_any(wda, ["Continue", "Next"]):
+            wda.tap(196, 706)
         time.sleep(4)
-        auto.dismiss_popups(max_attempts=2)
 
-        # Email field
-        email_field = wda.find_element(
-            "predicate string",
-            'type == "XCUIElementTypeTextField" AND (name CONTAINS[c] "email")'
+        # Step 2: Email verification code
+        verify_field = _wait_for_element(
+            wda, "predicate string",
+            'type == "XCUIElementTypeTextField" AND (name CONTAINS[c] "erification" OR name CONTAINS[c] "code")',
+            timeout=10, label="Reddit verification code field",
         )
-        if email_field:
-            wda.element_click(email_field["ELEMENT"])
-            auto.human_delay()
-            wda.element_value(email_field["ELEMENT"], email)
-            time.sleep(1)
+        if verify_field and email_password:
+            from sovi.persona.email_api import poll_for_code_mailtm
+            logger.info("Polling mail.tm for Reddit verification code...")
+            code = poll_for_code_mailtm(email, email_password, "reddit", timeout=90, poll_interval=5)
+            if code:
+                logger.info("Got Reddit verification code: %s", code)
+                wda.element_click(verify_field["ELEMENT"])
+                time.sleep(0.5)
+                wda.type_text(code)
+                time.sleep(1)
+                _click_any(wda, ["Continue", "Next"])
+                time.sleep(4)
+            else:
+                logger.warning("No verification code received — trying Skip")
+                _click_any(wda, ["Skip"])
+                time.sleep(3)
+        elif verify_field:
+            logger.warning("Verification needed but no email_password — trying Skip")
+            _click_any(wda, ["Skip"])
+            time.sleep(3)
 
-        _click_any(wda, ["Continue", "Next"])
-        time.sleep(3)
-
-        # Username
-        user_field = wda.find_element(
-            "predicate string",
-            'type == "XCUIElementTypeTextField" AND (name CONTAINS[c] "username")'
+        # Step 3: Username + Password page
+        user_field = _wait_for_element(
+            wda, "predicate string",
+            'type == "XCUIElementTypeTextField" AND name CONTAINS[c] "username"',
+            timeout=10, label="Reddit username field",
         )
-        if user_field:
-            wda.element_click(user_field["ELEMENT"])
-            auto.human_delay()
-            wda.element_value(user_field["ELEMENT"], username)
-            time.sleep(1)
+        if not user_field:
+            logger.warning("Username field not found — signup may have failed")
+            close_safari(wda)
+            return None
 
-        # Password
+        # Clear pre-filled username and enter ours
+        wda.element_click(user_field["ELEMENT"])
+        time.sleep(0.5)
+        wda.element_clear(user_field["ELEMENT"])
+        time.sleep(0.5)
+        wda.type_text(username)
+        time.sleep(2)  # Wait for availability check
+
+        # Enter password
         pw_field = wda.find_element(
             "predicate string",
             'type == "XCUIElementTypeSecureTextField"'
@@ -263,13 +388,15 @@ def _signup_reddit(
         if pw_field:
             wda.element_click(pw_field["ELEMENT"])
             auto.human_delay()
-            wda.element_value(pw_field["ELEMENT"], password)
+            wda.type_text(password)
             time.sleep(1)
 
-        _click_any(wda, ["Sign Up", "Sign up", "Continue"])
+        # Submit
+        if not _click_any(wda, ["Continue", "Sign Up", "Sign up"]):
+            wda.tap(196, 706)
         time.sleep(5)
 
-        # Handle CAPTCHA
+        # Handle CAPTCHA if present
         screenshot = wda.screenshot()
         if screenshot:
             from sovi.auth.captcha_solver import solve_image
@@ -279,7 +406,6 @@ def _signup_reddit(
         auto.dismiss_popups(max_attempts=3)
         close_safari(wda)
 
-        # Store in DB
         return _store_account(persona, "reddit", username, email, password, device_id)
 
     except Exception:
@@ -591,6 +717,24 @@ def _signup_linkedin(
         logger.error("LinkedIn signup failed for %s", email, exc_info=True)
         close_safari(wda)
         return None
+
+
+def _wait_for_element(
+    wda: WDASession,
+    strategy: str,
+    selector: str,
+    *,
+    timeout: int = 10,
+    label: str = "element",
+) -> dict | None:
+    """Poll for an element to appear, returning it or None on timeout."""
+    for _ in range(timeout // 2):
+        el = wda.find_element(strategy, selector)
+        if el:
+            return el
+        time.sleep(2)
+    logger.warning("Timed out waiting for %s", label)
+    return None
 
 
 def _click_any(wda: WDASession, labels: list[str]) -> bool:
