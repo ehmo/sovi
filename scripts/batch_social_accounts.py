@@ -55,7 +55,7 @@ def get_personas_needing_platform(platform: str) -> list[dict]:
              AND EXISTS (
                  SELECT 1 FROM email_accounts ea
                  WHERE ea.persona_id = p.id
-                   AND ea.status = 'available'
+                   AND ea.status IN ('available', 'assigned')
              )
              AND NOT EXISTS (
                  SELECT 1 FROM accounts a

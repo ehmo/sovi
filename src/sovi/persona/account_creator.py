@@ -50,7 +50,7 @@ def create_account_for_persona(
     email_row = sync_execute_one(
         """SELECT id, email, password, provider, imap_host, imap_port
            FROM email_accounts
-           WHERE persona_id = %s AND status = 'available'
+           WHERE persona_id = %s AND status IN ('available', 'assigned')
            ORDER BY created_at DESC LIMIT 1""",
         (persona_id,),
     )
