@@ -22,10 +22,10 @@ from sovi.persona.email_creator import SAFARI_BUNDLE, close_safari, open_safari
 logger = logging.getLogger(__name__)
 
 # Platform signup priorities
-PLATFORM_PRIORITY = ["tiktok", "instagram", "reddit", "youtube_shorts", "facebook", "linkedin"]
+PLATFORM_PRIORITY = ["tiktok", "instagram", "x_twitter", "reddit", "youtube_shorts", "facebook", "linkedin"]
 
 # Platforms that use app-based signup
-APP_PLATFORMS = {"tiktok", "instagram"}
+APP_PLATFORMS = {"tiktok", "instagram", "x_twitter"}
 # Platforms that use Safari web signup
 WEB_PLATFORMS = {"reddit", "youtube_shorts", "facebook", "linkedin"}
 

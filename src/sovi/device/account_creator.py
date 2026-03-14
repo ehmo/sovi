@@ -279,6 +279,8 @@ def create_account(
         success = _signup_tiktok(wda, auto, email, password, username, imap_config, device_id, email_password=email_password)
     elif platform == "instagram":
         success = _signup_instagram(wda, auto, email, password, username, imap_config, device_id, email_password=email_password)
+    elif platform in ("x_twitter", "twitter"):
+        success = _signup_x_twitter(wda, auto, email, password, username, imap_config, device_id, email_password=email_password)
     else:
         logger.error("Unsupported platform for signup: %s", platform)
         return None
@@ -929,6 +931,195 @@ def _signup_instagram(
 
     except Exception:
         logger.error("Instagram signup failed for %s", email, exc_info=True)
+        return False
+
+
+def _signup_x_twitter(
+    wda: WDASession,
+    auto: DeviceAutomation,
+    email: str,
+    password: str,
+    username: str,
+    imap_config: ImapConfig | None,
+    device_id: str | None,
+    *,
+    email_password: str | None = None,
+) -> bool:
+    """X/Twitter signup flow via the X app.
+
+    Flow: Launch → Create account → Name + Email + DOB → Next →
+          CAPTCHA → Email verification → Password → Username → Done
+    """
+    try:
+        wda.launch_app(BUNDLES["x_twitter"])
+        time.sleep(random.uniform(5, 8))
+        auto.dismiss_popups(max_attempts=3)
+
+        # Look for "Create account" button
+        for label in ["Create account", "Sign up", "Create Account"]:
+            el = wda.find_element("accessibility id", label)
+            if el:
+                wda.element_click(el["ELEMENT"])
+                time.sleep(3)
+                break
+        else:
+            # Try predicate search
+            el = wda.find_element(
+                "predicate string",
+                'name CONTAINS[c] "create account" OR name CONTAINS[c] "sign up"'
+            )
+            if el:
+                wda.element_click(el["ELEMENT"])
+                time.sleep(3)
+
+        auto.dismiss_popups(max_attempts=2)
+
+        # Name field
+        name_field = wda.find_element(
+            "predicate string",
+            'type == "XCUIElementTypeTextField" AND (name CONTAINS[c] "name" OR name CONTAINS[c] "Name")'
+        )
+        if name_field:
+            display_name = username.replace("_", " ").title()
+            wda.element_click(name_field["ELEMENT"])
+            time.sleep(0.3)
+            wda.element_value(name_field["ELEMENT"], display_name)
+            time.sleep(1)
+
+        # Email field — X might show phone first, need to switch to email
+        email_link = wda.find_element(
+            "predicate string",
+            'name CONTAINS[c] "use email instead" OR name CONTAINS[c] "email"'
+        )
+        if email_link and "button" in str(wda.element_attribute(email_link["ELEMENT"], "type")).lower():
+            wda.element_click(email_link["ELEMENT"])
+            time.sleep(2)
+
+        email_field = wda.find_element(
+            "predicate string",
+            'type == "XCUIElementTypeTextField" AND (name CONTAINS[c] "email" OR name CONTAINS[c] "phone")'
+        )
+        if email_field:
+            wda.element_click(email_field["ELEMENT"])
+            time.sleep(0.3)
+            wda.element_value(email_field["ELEMENT"], email)
+            time.sleep(1)
+
+        # Date of birth — X uses picker wheels
+        pickers = wda.find_elements("class chain", "**/XCUIElementTypePickerWheel")
+        if pickers:
+            # Just swipe the year picker to set adult age
+            if len(pickers) >= 3:
+                year_picker = pickers[2]  # Usually 3rd picker = year
+                for _ in range(5):
+                    wda.swipe(
+                        196, 600, 196, 700, duration=0.3
+                    )
+                    time.sleep(0.5)
+            time.sleep(1)
+
+        # Next button
+        for label in ["Next", "Continue"]:
+            el = wda.find_element("accessibility id", label)
+            if el:
+                wda.element_click(el["ELEMENT"])
+                time.sleep(5)
+                break
+
+        auto.dismiss_popups(max_attempts=2)
+
+        # Confirmation / "Sign up" button
+        for label in ["Sign up", "Sign Up", "Create account", "Next"]:
+            el = wda.find_element("accessibility id", label)
+            if el:
+                wda.element_click(el["ELEMENT"])
+                time.sleep(5)
+                break
+
+        # CAPTCHA handling — X uses arkose labs
+        time.sleep(5)
+        auto.dismiss_popups(max_attempts=3)
+
+        # Email verification code
+        logger.info("X/Twitter signup: waiting for email verification code")
+        code = None
+        if imap_config:
+            code = poll_for_code(imap_config, "x_twitter", target_email=email, timeout=120)
+        elif email_password:
+            code = poll_for_code_mailtm(email, email_password, "x_twitter", timeout=120)
+
+        if code:
+            logger.info("X verification code received: %s", code)
+            code_field = wda.find_element(
+                "predicate string",
+                'type == "XCUIElementTypeTextField"'
+            )
+            if code_field:
+                wda.element_value(code_field["ELEMENT"], code)
+                time.sleep(2)
+            for label in ["Next", "Verify", "Continue"]:
+                el = wda.find_element("accessibility id", label)
+                if el:
+                    wda.element_click(el["ELEMENT"])
+                    time.sleep(3)
+                    break
+        else:
+            logger.warning("No X verification code received")
+
+        # Password
+        pw_field = wda.find_element(
+            "predicate string",
+            'type == "XCUIElementTypeSecureTextField"'
+        )
+        if pw_field:
+            wda.element_click(pw_field["ELEMENT"])
+            time.sleep(0.3)
+            wda.element_value(pw_field["ELEMENT"], password)
+            time.sleep(1)
+            for label in ["Next", "Continue"]:
+                el = wda.find_element("accessibility id", label)
+                if el:
+                    wda.element_click(el["ELEMENT"])
+                    time.sleep(3)
+                    break
+
+        # Username — X may suggest one or let you pick
+        username_field = wda.find_element(
+            "predicate string",
+            'type == "XCUIElementTypeTextField" AND (name CONTAINS[c] "username" OR name CONTAINS[c] "handle")'
+        )
+        if username_field:
+            wda.element_click(username_field["ELEMENT"])
+            time.sleep(0.3)
+            wda.element_value(username_field["ELEMENT"], username)
+            time.sleep(1)
+            for label in ["Next", "Continue", "Skip for now"]:
+                el = wda.find_element("accessibility id", label)
+                if el:
+                    wda.element_click(el["ELEMENT"])
+                    time.sleep(3)
+                    break
+
+        # Skip through onboarding
+        for _ in range(5):
+            dismissed = False
+            for label in ["Skip", "Not now", "Skip for now", "Maybe later",
+                          "Next", "Continue", "Allow", "Don't Allow"]:
+                el = wda.find_element("accessibility id", label)
+                if el:
+                    wda.element_click(el["ELEMENT"])
+                    time.sleep(2)
+                    dismissed = True
+                    break
+            if not dismissed:
+                break
+
+        auto.dismiss_popups(max_attempts=3)
+        logger.info("X/Twitter signup flow completed for %s", email)
+        return True
+
+    except Exception:
+        logger.error("X/Twitter signup failed for %s", email, exc_info=True)
         return False
 
 

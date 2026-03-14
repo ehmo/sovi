@@ -30,12 +30,16 @@ BUNDLES = BUNDLE_IDS
 APP_NAMES: dict[str, str] = {
     "tiktok": "TikTok",
     "instagram": "Instagram",
+    "x_twitter": "X",
+    "twitter": "X",
 }
 
 # Direct App Store URLs (much more reliable than search)
 APP_STORE_URLS: dict[str, str] = {
     "tiktok": "itms-apps://itunes.apple.com/app/id835599320",
     "instagram": "itms-apps://itunes.apple.com/app/id389801252",
+    "x_twitter": "itms-apps://itunes.apple.com/app/id333903271",
+    "twitter": "itms-apps://itunes.apple.com/app/id333903271",
 }
 
 
