@@ -48,7 +48,7 @@ def create_account_for_persona(
 
     # Get persona's email account
     email_row = sync_execute_one(
-        """SELECT id, email, password, imap_host, imap_port
+        """SELECT id, email, password, provider, imap_host, imap_port
            FROM email_accounts
            WHERE persona_id = %s AND status = 'available'
            ORDER BY created_at DESC LIMIT 1""",
@@ -66,22 +66,30 @@ def create_account_for_persona(
     password = decrypt(email_row["password"])
     email_account_id = str(email_row["id"])
 
-    imap_config = ImapConfig(
-        host=email_row["imap_host"],
-        username=email,
-        password=password,
-        port=email_row["imap_port"],
-    )
+    # Build email verification config based on provider
+    if email_row.get("provider") == "mailtm":
+        # mail.tm uses REST API — pass None for imap_config, use API-based polling
+        imap_config = None
+    else:
+        imap_config = ImapConfig(
+            host=email_row["imap_host"],
+            username=email,
+            password=password,
+            port=email_row["imap_port"],
+        )
 
     events.emit("persona", "info", "platform_account_creation_started",
                 f"Creating {platform} account for {persona.get('display_name', '?')}",
                 device_id=device_id,
                 context={"persona_id": persona_id, "platform": platform})
 
+    # For mail.tm accounts, pass the email password for API-based code polling
+    email_pw = password if email_row.get("provider") == "mailtm" else None
+
     if platform in APP_PLATFORMS:
-        result = _create_app_account(wda, persona, platform, email, password, imap_config, device_id)
+        result = _create_app_account(wda, persona, platform, email, password, imap_config, device_id, email_password=email_pw)
     elif platform in WEB_PLATFORMS:
-        result = _create_web_account(wda, persona, platform, email, password, imap_config, device_id)
+        result = _create_web_account(wda, persona, platform, email, password, imap_config, device_id, email_password=email_pw)
     else:
         logger.error("Unknown platform: %s", platform)
         return None
@@ -118,8 +126,10 @@ def _create_app_account(
     platform: str,
     email: str,
     password: str,
-    imap_config: ImapConfig,
+    imap_config: ImapConfig | None,
     device_id: str | None,
+    *,
+    email_password: str | None = None,
 ) -> dict | None:
     """Create account via app (TikTok, Instagram) using persona data.
 
@@ -129,7 +139,7 @@ def _create_app_account(
     niche_id = persona["niche_id"]
     return create_account(
         wda, platform, niche_id, email, password,
-        imap_config=imap_config, device_id=device_id,
+        imap_config=imap_config, email_password=email_password, device_id=device_id,
     )
 
 
@@ -141,6 +151,8 @@ def _create_web_account(
     password: str,
     imap_config: ImapConfig | None,
     device_id: str | None,
+    *,
+    email_password: str | None = None,
 ) -> dict | None:
     """Create account via Safari web signup."""
     auto = DeviceAutomation(wda)

@@ -25,6 +25,7 @@ from sovi import events
 from sovi.auth import totp
 from sovi.auth.captcha_solver import detect_captcha_popup, solve_puzzle_local, solve_slide
 from sovi.auth.email_verifier import ImapConfig, poll_for_code
+from sovi.persona.email_api import poll_for_code_mailtm
 from sovi.auth.sms_verifier import cancel_verification, request_number, wait_for_code
 from sovi.crypto import encrypt
 from sovi.db import sync_execute, sync_execute_one
@@ -231,6 +232,7 @@ def create_account(
     password: str,
     *,
     imap_config: ImapConfig | None = None,
+    email_password: str | None = None,
     device_id: str | None = None,
 ) -> dict[str, Any] | None:
     """Create a new account on a platform.
@@ -274,9 +276,9 @@ def create_account(
 
     # Step 3-7: Platform-specific signup
     if platform == "tiktok":
-        success = _signup_tiktok(wda, auto, email, password, username, imap_config, device_id)
+        success = _signup_tiktok(wda, auto, email, password, username, imap_config, device_id, email_password=email_password)
     elif platform == "instagram":
-        success = _signup_instagram(wda, auto, email, password, username, imap_config, device_id)
+        success = _signup_instagram(wda, auto, email, password, username, imap_config, device_id, email_password=email_password)
     else:
         logger.error("Unsupported platform for signup: %s", platform)
         return None
@@ -348,6 +350,8 @@ def _signup_tiktok(
     username: str,
     imap_config: ImapConfig | None,
     device_id: str | None,
+    *,
+    email_password: str | None = None,
 ) -> bool:
     """TikTok signup flow — coordinate-based with screenshot verification.
 
@@ -603,47 +607,49 @@ def _signup_tiktok(
         logger.info("TikTok signup step 8: Email verification")
         _ss("verification_screen")
 
+        # Poll for verification code via IMAP or mail.tm API
+        code = None
         if imap_config:
             code = poll_for_code(imap_config, "tiktok", target_email=email, timeout=120)
-            if code:
-                logger.info("Email verification code received: %s", code)
-                # Find the code input field
+        elif email_password:
+            code = poll_for_code_mailtm(email, email_password, "tiktok", timeout=120)
+        else:
+            logger.warning("No email verification method available")
+
+        if code:
+            logger.info("Email verification code received: %s", code)
+            code_field = wda.find_element(
+                "predicate string",
+                'type == "XCUIElementTypeTextField"'
+            )
+            if not code_field:
+                code_field = wda.find_element("class chain", "**/XCUIElementTypeTextField")
+            if code_field:
+                wda.element_value(code_field["ELEMENT"], code)
+                time.sleep(3)
+            else:
+                wda.tap(196, 280)
+                time.sleep(1)
                 code_field = wda.find_element(
                     "predicate string",
                     'type == "XCUIElementTypeTextField"'
                 )
-                if not code_field:
-                    code_field = wda.find_element("class chain", "**/XCUIElementTypeTextField")
                 if code_field:
                     wda.element_value(code_field["ELEMENT"], code)
                     time.sleep(3)
-                else:
-                    # Tap the code input area and try again
-                    wda.tap(196, 280)
-                    time.sleep(1)
-                    code_field = wda.find_element(
-                        "predicate string",
-                        'type == "XCUIElementTypeTextField"'
-                    )
-                    if code_field:
-                        wda.element_value(code_field["ELEMENT"], code)
-                        time.sleep(3)
 
-                # Tap Next/Verify
-                for label in ["Next", "Verify", "Continue"]:
-                    el = wda.find_element("accessibility id", label)
-                    if el:
-                        wda.element_click(el["ELEMENT"])
-                        break
-                time.sleep(random.uniform(5, 8))
-            else:
-                logger.warning("No email verification code received")
-                events.emit("account", "warning", "signup_no_email_code",
-                            "Email verification code not received",
-                            device_id=device_id,
-                            context={"platform": "tiktok", "email": email, "step": "email_verify"})
+            for label in ["Next", "Verify", "Continue"]:
+                el = wda.find_element("accessibility id", label)
+                if el:
+                    wda.element_click(el["ELEMENT"])
+                    break
+            time.sleep(random.uniform(5, 8))
         else:
-            logger.warning("No IMAP config — cannot verify email")
+            logger.warning("No email verification code received")
+            events.emit("account", "warning", "signup_no_email_code",
+                        "Email verification code not received",
+                        device_id=device_id,
+                        context={"platform": "tiktok", "email": email, "step": "email_verify"})
 
         _dismiss_tiktok_alerts(wda)
         _ss("after_email_verify")
@@ -788,6 +794,8 @@ def _signup_instagram(
     username: str,
     imap_config: ImapConfig | None,
     device_id: str | None,
+    *,
+    email_password: str | None = None,
 ) -> bool:
     """Instagram signup flow."""
     try:
@@ -822,23 +830,27 @@ def _signup_instagram(
                 time.sleep(3)
                 break
 
-        # Confirmation code from email
+        # Confirmation code from email (IMAP or mail.tm API)
+        code = None
         if imap_config:
             code = poll_for_code(imap_config, "instagram", target_email=email, timeout=90)
-            if code:
-                code_field = wda.find_element(
-                    "predicate string",
-                    'type == "XCUIElementTypeTextField"'
-                )
-                if code_field:
-                    wda.element_value(code_field["ELEMENT"], code)
-                    time.sleep(1)
-                    for label in ["Next", "Confirm", "Continue"]:
-                        el = wda.find_element("accessibility id", label)
-                        if el:
-                            wda.element_click(el["ELEMENT"])
-                            time.sleep(3)
-                            break
+        elif email_password:
+            code = poll_for_code_mailtm(email, email_password, "instagram", timeout=90)
+
+        if code:
+            code_field = wda.find_element(
+                "predicate string",
+                'type == "XCUIElementTypeTextField"'
+            )
+            if code_field:
+                wda.element_value(code_field["ELEMENT"], code)
+                time.sleep(1)
+                for label in ["Next", "Confirm", "Continue"]:
+                    el = wda.find_element("accessibility id", label)
+                    if el:
+                        wda.element_click(el["ELEMENT"])
+                        time.sleep(3)
+                        break
 
         # Full name
         name_field = wda.find_element(

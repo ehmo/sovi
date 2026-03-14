@@ -23,7 +23,7 @@ from sovi.db import sync_execute_one
 logger = logging.getLogger(__name__)
 
 SCALE_FACTOR = 0.93
-MAX_CAPTCHA_ATTEMPTS = 5
+MAX_CAPTCHA_ATTEMPTS = 3
 
 
 def _generate_password() -> str:
@@ -73,7 +73,7 @@ def _find_icon_centers(img_bytes: bytes) -> tuple[float, float] | None:
     return None
 
 
-def _drag_slider(page, offset: int) -> bool:
+def _drag_slider_once(page, offset: int) -> bool:
     """Drag CaptchaFox slider with human-like movement. Returns True if solved."""
     try:
         page.wait_for_selector(".cf-slider__button", state="visible", timeout=5000)
@@ -120,8 +120,65 @@ def _drag_slider(page, offset: int) -> bool:
     return state == "true"
 
 
+def _solve_captchafox(page) -> bool:
+    """Solve CaptchaFox slider CAPTCHA with multiple attempts and offsets.
+
+    After each failed drag, the slider resets and may show a new image.
+    Re-screenshot and re-detect each time.
+    """
+    for attempt in range(6):
+        canvas_area = page.query_selector(".cf-slide__action")
+        if not canvas_area:
+            logger.info("No CaptchaFox canvas (.cf-slide__action) found")
+            # Check what's visible instead
+            checkbox = page.query_selector('div[role=checkbox]')
+            if checkbox:
+                state = checkbox.get_attribute("aria-checked")
+                logger.info("CaptchaFox checkbox state: %s", state)
+                if state == "true":
+                    return True
+            return False
+
+        img_bytes = canvas_area.screenshot()
+        result = _find_icon_centers(img_bytes)
+
+        if result:
+            left_x, right_x = result
+            canvas_dist = right_x - left_x
+            base_offset = max(10, min(int(canvas_dist / SCALE_FACTOR), 260))
+            offsets = [base_offset, base_offset + 8, base_offset - 8,
+                       base_offset + 16, base_offset - 16]
+        else:
+            logger.info("Icon detection failed, trying common offsets")
+            offsets = [120, 140, 100, 160, 80, 180]
+
+        offset = offsets[attempt % len(offsets)]
+        logger.info("CaptchaFox attempt %d: offset=%d", attempt + 1, offset)
+
+        if _drag_slider_once(page, offset):
+            logger.info("CaptchaFox solved on attempt %d (offset=%d)", attempt + 1, offset)
+            return True
+
+        # Wait for slider reset before retrying
+        time.sleep(random.uniform(1.5, 3.0))
+
+    return False
+
+
 def _attempt_signup(page, first: str, last: str, month: str, day: str, year: str, gender: str) -> tuple[str, str] | None:
     """Run one full mail.com signup attempt. Returns (email, password) or None."""
+    # Capture JS console messages and errors
+    console_msgs = []
+    def _on_console(msg):
+        if msg.type in ("error", "warning", "log"):
+            console_msgs.append(f"[{msg.type}] {msg.text[:200]}")
+    page.on("console", _on_console)
+
+    js_errors = []
+    def _on_pageerror(exc):
+        js_errors.append(str(exc)[:200])
+    page.on("pageerror", _on_pageerror)
+
     page.goto("https://signup.mail.com/", wait_until="load", timeout=30000)
     time.sleep(random.uniform(3, 5))
 
@@ -178,45 +235,168 @@ def _attempt_signup(page, first: str, last: str, month: str, day: str, year: str
     page.evaluate("document.querySelector('[data-test=progress-meter-next]').click()")
     time.sleep(random.uniform(4, 6))
 
+    # After skipping phone, disable the invalid phone/code inputs
+    # so Angular excludes them from form validation (disabled controls skip validation)
+    page.evaluate("""(() => {
+        document.querySelector('input[name=mobile-phone]')?.setAttribute('disabled', '');
+        document.querySelectorAll('input[name^=code-field]').forEach(el => el.setAttribute('disabled', ''));
+        // Also disable password recovery inputs
+        document.querySelector('.password-recovery-advanced__fieldset')
+            ?.querySelectorAll('input').forEach(i => i.setAttribute('disabled', ''));
+    })()""")
+    time.sleep(1)
+
+    # Set up network interceptor to capture ALL non-static API calls
+    api_responses = []
+    def _on_response(response):
+        url = response.url
+        # Skip static assets (images, fonts, CSS, JS chunks)
+        if any(url.endswith(ext) for ext in ['.js', '.css', '.png', '.jpg', '.gif', '.svg', '.woff', '.woff2', '.ico']):
+            return
+        if any(x in url for x in ['chunk-', 'polyfills', 'runtime', 'webpack', 'assets/', 'static/']):
+            return
+        try:
+            body = response.text()[:300]
+        except Exception:
+            body = f"[status={response.status}]"
+        api_responses.append({"url": url[:200], "status": response.status, "body": body})
+    page.on("response", _on_response)
+
     # Step 6: CaptchaFox checkbox
+    # First check CaptchaFox config (data-callback, sitekey, etc.)
+    cf_config = page.evaluate("""(() => {
+        const widget = document.querySelector('.captchafox');
+        if (!widget) return 'no widget';
+        const attrs = {};
+        for (const attr of widget.attributes) {
+            attrs[attr.name] = attr.value?.substring(0, 100);
+        }
+        // Check for data-callback on parent form or widget
+        const form = widget.closest('form');
+        const formAction = form?.action;
+        return { widgetAttrs: attrs, formAction };
+    })()""")
+    logger.info("CaptchaFox config: %s", cf_config)
+
     cb = page.query_selector('div[role="checkbox"]')
     if not cb or not cb.bounding_box():
+        logger.info("CaptchaFox checkbox not found on page")
         return None
+    logger.info("CaptchaFox checkbox found, clicking...")
     box = cb.bounding_box()
     page.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2, steps=8)
     time.sleep(0.4)
     page.mouse.click(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
     time.sleep(3)
 
-    # Step 7: Solve slider
-    canvas_area = page.query_selector(".cf-slide__action")
-    if not canvas_area:
-        return None
-    img_bytes = canvas_area.screenshot()
-    result = _find_icon_centers(img_bytes)
-    if not result:
+    # Step 7: Solve slider (multi-attempt)
+    if not _solve_captchafox(page):
         return None
 
-    left_x, right_x = result
-    canvas_dist = right_x - left_x
-    slider_offset = max(10, min(int(canvas_dist / SCALE_FACTOR), 260))
+    # Step 8: Accept terms consent and create mailbox
+    # CaptchaFox verifies OK (solved:true) but Angular never updates because
+    # the onVerify callback fires outside NgZone. We captured the callback
+    # via our render() monkey-patch. Invoke it manually with the token.
+    time.sleep(1)
 
-    if not _drag_slider(page, slider_offset):
-        return None
-
-    # Step 8: Click "Agree and continue"
-    time.sleep(2)
-    page.evaluate("document.querySelector('[data-test=create-mailbox-create-button]')?.click()")
+    # Step 8: Check button state, if disabled try reset + re-solve
     time.sleep(3)
+    btn_disabled = page.evaluate(
+        "document.querySelector('[data-test=create-mailbox-create-button]')?.disabled"
+    )
+    logger.info("Button disabled after CAPTCHA: %s", btn_disabled)
+
+    if btn_disabled:
+        # Reset CaptchaFox and solve again — first solve may fire callback
+        # before Angular's subscription is ready
+        logger.info("Resetting CaptchaFox and re-solving...")
+        page.evaluate("window.captchafox.reset()")
+        time.sleep(3)
+
+        # Re-click checkbox
+        cb = page.query_selector('div[role="checkbox"]')
+        if cb and cb.bounding_box():
+            box = cb.bounding_box()
+            page.mouse.click(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+            time.sleep(3)
+
+            # Re-solve slider
+            if _solve_captchafox(page):
+                logger.info("Re-solved CaptchaFox, checking button...")
+                time.sleep(5)
+                btn_disabled = page.evaluate(
+                    "document.querySelector('[data-test=create-mailbox-create-button]')?.disabled"
+                )
+                logger.info("Button after re-solve: %s", "disabled" if btn_disabled else "ENABLED")
+
+    # Final poll
+    for i in range(5):
+        time.sleep(2)
+        disabled = page.evaluate(
+            "document.querySelector('[data-test=create-mailbox-create-button]')?.disabled"
+        )
+        if not disabled:
+            logger.info("Button enabled after %ds!", (i + 1) * 2)
+            break
+    else:
+        logger.warning("Button still disabled after additional 10s")
+
+    page.remove_listener("response", _on_response)
+
+    # Force-enable and click
+    page.evaluate("""(() => {
+        const btn = document.querySelector('[data-test=create-mailbox-create-button]');
+        if (btn?.disabled) { btn.disabled = false; btn.removeAttribute('disabled'); }
+    })()""")
+    time.sleep(0.5)
+
+    btn = page.query_selector("[data-test=create-mailbox-create-button]")
+    if btn:
+        try:
+            btn.click(timeout=10000)
+        except Exception:
+            try:
+                btn.click(force=True, timeout=5000)
+            except Exception:
+                pass
+    time.sleep(20)
+
+    # Step 9: Verify account creation
+    url = page.url
+    logger.info("Post-signup URL: %s", url[:120])
+
+    # Save debug screenshot
     try:
-        btn = page.query_selector("[data-test=create-mailbox-create-button]")
-        if btn:
-            btn.click(force=True, timeout=5000)
+        page.screenshot(path="/tmp/signup_result.png")
     except Exception:
         pass
-    time.sleep(15)
 
-    return (chosen, password)
+    # Check page content for success/failure signals
+    content = page.evaluate("document.body?.innerText || ''")
+    logger.info("Post-signup text (first 200): %s", content[:200].replace("\\n", " "))
+
+    # Success: navigated away from signup
+    if "signup" not in url.lower() and url != "about:blank":
+        logger.info("Account created - navigated to: %s", url[:80])
+        return (chosen, password)
+
+    # Success: page shows inbox or welcome content
+    success_keywords = ["inbox", "welcome", "mailbox", "your email", "congratulations",
+                        "successfully", "account has been created"]
+    content_lower = content.lower()
+    if any(kw in content_lower for kw in success_keywords):
+        logger.info("Account created - success text found")
+        return (chosen, password)
+
+    # Failure: still on signup page with create button
+    create_btn = page.query_selector("[data-test=create-mailbox-create-button]")
+    if create_btn:
+        logger.warning("Still on signup page with create button - account NOT created")
+        return None
+
+    # Ambiguous: signup page but no create button (might have been consumed)
+    logger.warning("Unclear signup result (URL: %s), assuming failure", url[:80])
+    return None
 
 
 def create_email_mailcom(persona: dict, max_attempts: int = MAX_CAPTCHA_ATTEMPTS) -> dict | None:
@@ -282,7 +462,7 @@ def create_email_mailcom(persona: dict, max_attempts: int = MAX_CAPTCHA_ATTEMPTS
 def create_emails_batch(personas: list[dict]) -> list[dict]:
     """Create mail.com email accounts for a batch of personas.
 
-    Uses a single browser instance for efficiency.
+    Recreates browser context every few personas or on crash for resilience.
     Returns list of successfully created account dicts.
     """
     from playwright.sync_api import sync_playwright
@@ -290,21 +470,41 @@ def create_emails_batch(personas: list[dict]) -> list[dict]:
 
     results = []
     total = len(personas)
+    # Recreate browser every N personas to avoid staleness/crashes
+    REFRESH_EVERY = 5
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(
-            headless=False,
-            args=["--disable-blink-features=AutomationControlled", "--no-sandbox"],
-        )
-        context = browser.new_context(
-            viewport={"width": 1280, "height": 800},
-            user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-            locale="en-US",
-        )
-        Stealth().apply_stealth_sync(context)
-        page = context.new_page()
+        browser = None
+        page = None
+
+        def _new_browser():
+            nonlocal browser, page
+            if browser:
+                try:
+                    browser.close()
+                except Exception:
+                    pass
+            browser = p.chromium.launch(
+                headless=False,
+                args=["--disable-blink-features=AutomationControlled", "--no-sandbox"],
+            )
+            context = browser.new_context(
+                viewport={"width": 1280, "height": 800},
+                user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+                locale="en-US",
+            )
+            Stealth().apply_stealth_sync(context)
+            page = context.new_page()
+            return page
+
+        page = _new_browser()
 
         for i, persona in enumerate(personas):
+            # Refresh browser periodically
+            if i > 0 and i % REFRESH_EVERY == 0:
+                logger.info("Refreshing browser (every %d personas)", REFRESH_EVERY)
+                page = _new_browser()
+
             first = persona["first_name"]
             last = persona["last_name"]
             dob = str(persona["date_of_birth"])
@@ -336,6 +536,14 @@ def create_emails_batch(personas: list[dict]) -> list[dict]:
                         break
                 except Exception as e:
                     logger.warning("Attempt %d error: %s", attempt, e)
+                    # If browser crashed, recreate it
+                    if "closed" in str(e).lower() or "crash" in str(e).lower():
+                        logger.info("Browser crashed, recreating...")
+                        try:
+                            page = _new_browser()
+                        except Exception:
+                            logger.error("Failed to recreate browser", exc_info=True)
+                            break
 
                 time.sleep(random.uniform(2, 5))
 
@@ -345,7 +553,11 @@ def create_emails_batch(personas: list[dict]) -> list[dict]:
             if i < total - 1:
                 time.sleep(random.uniform(5, 15))
 
-        browser.close()
+        if browser:
+            try:
+                browser.close()
+            except Exception:
+                pass
 
     logger.info("Created %d/%d email accounts", len(results), total)
     return results
