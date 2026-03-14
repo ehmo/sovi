@@ -537,9 +537,10 @@ def _signup_tiktok(
 
         # -- Step 7: CAPTCHA handling --
         logger.info("TikTok signup step 7: CAPTCHA check")
+        no_captcha_count = 0  # Wait for CAPTCHA to appear (delayed popup)
 
         for captcha_round in range(10):
-            time.sleep(3)
+            time.sleep(5)  # Give CAPTCHA more time to appear
             png = _ss(f"captcha_check_{captcha_round + 1}")
             if not png:
                 break
@@ -547,6 +548,7 @@ def _signup_tiktok(
             # Detect puzzle CAPTCHA popup
             puzzle = solve_puzzle_local(png)
             if puzzle:
+                no_captcha_count = 0  # Reset patience
                 slider_y = puzzle["slider_y"]
                 start_x = puzzle["slider_start_x"]
                 popup_w = puzzle["popup_width"]
@@ -599,9 +601,12 @@ def _signup_tiktok(
                 time.sleep(5)
                 continue
 
-            # No CAPTCHA detected — passed through
-            logger.info("No CAPTCHA detected, proceeding")
-            break
+            # No CAPTCHA detected yet — wait a few rounds for delayed popup
+            no_captcha_count += 1
+            if no_captcha_count >= 3:
+                logger.info("No CAPTCHA detected after %d checks, proceeding", no_captcha_count)
+                break
+            logger.info("No CAPTCHA detected (check %d/3), waiting...", no_captcha_count)
 
         _dismiss_tiktok_alerts(wda)
 
