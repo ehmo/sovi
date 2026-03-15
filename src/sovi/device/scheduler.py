@@ -241,6 +241,11 @@ class DeviceScheduler:
         session = WDASession(device)
         try:
             session.connect()
+
+            # CRITICAL: Ensure WiFi is OFF — all traffic must be cellular/GSM
+            dt.current_task = "enforcing_wifi_off"
+            session.ensure_wifi_off()
+
             result = run_seeder_cycle(session, dt.device_id, device.name)
             if result:
                 dt.sessions_today += 1
@@ -263,6 +268,17 @@ class DeviceScheduler:
     def _run_warmer_iteration(self, device: WDADevice, dt: DeviceThread) -> None:
         """Execute one warming iteration for a warmer device."""
         device_id = dt.device_id
+
+        # CRITICAL: Ensure WiFi is OFF — all traffic must be cellular/GSM
+        dt.current_task = "enforcing_wifi_off"
+        _session = WDASession(device)
+        try:
+            _session.connect()
+            _session.ensure_wifi_off()
+        except Exception:
+            logger.warning("Could not verify WiFi off for %s", device.name)
+        finally:
+            _session.disconnect()
 
         # Get next warming task (device-affinity aware)
         dt.current_task = "selecting_task"
@@ -502,7 +518,11 @@ class DeviceScheduler:
         try:
             session.connect()
 
-            # Step 0: Rotate IP via airplane mode toggle
+            # Step 0a: Ensure WiFi is OFF before any network activity
+            dt.current_task = f"enforcing_wifi_off:{device.name}"
+            session.ensure_wifi_off()
+
+            # Step 0b: Rotate IP via airplane mode toggle
             dt.current_task = f"rotating_ip:{device.name}"
             if not session.toggle_airplane_mode():
                 logger.warning("Airplane mode toggle failed on %s, continuing anyway", device.name)

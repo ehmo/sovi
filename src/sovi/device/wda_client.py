@@ -356,6 +356,64 @@ class WDASession:
         """Close Safari cleanly."""
         self.terminate_app("com.apple.mobilesafari")
 
+    # --- WiFi enforcement (must be OFF — all traffic via cellular) ---
+
+    def ensure_wifi_off(self) -> bool:
+        """Ensure WiFi is disabled via Control Center.
+
+        ALL persona-facing traffic MUST go through cellular/GSM.
+        WiFi must never be active during tasks. This opens Control Center,
+        checks the WiFi button state, and disables it if active.
+
+        Returns True if WiFi is confirmed off.
+        """
+        size = self.screen_size()
+        w, h = size["width"], size["height"]
+
+        try:
+            # Open Control Center
+            self.swipe(int(w * 0.9), 0, int(w * 0.5), int(h * 0.5), duration=0.3)
+            time.sleep(1.5)
+
+            # Find WiFi button
+            wifi_el = self.find_element("accessibility id", "wifi-button")
+            if wifi_el:
+                # Check if WiFi is enabled — the label/value contains state info
+                # If the button's value indicates it's on, tap to disable
+                el_id = wifi_el["ELEMENT"]
+                try:
+                    resp = self.client.get(f"{self._s}/element/{el_id}/attribute/value", timeout=5)
+                    value = resp.json().get("value", "")
+                except Exception:
+                    value = ""
+
+                # WiFi button value is "Wi-Fi" when off, "Wi-Fi, <network>" when on
+                if "," in str(value) or "connected" in str(value).lower():
+                    self.element_click(el_id)
+                    logger.info("WiFi was ON — disabled on %s", self.device.name)
+                    time.sleep(1.0)
+                else:
+                    logger.info("WiFi confirmed off on %s", self.device.name)
+            else:
+                # Fallback: tap the known WiFi coordinate area
+                # WiFi is next to airplane mode in the connectivity group
+                self.tap(int(w * 0.35), int(h * 0.18))
+                logger.warning("WiFi button not found by accessibility id, used coordinate tap on %s", self.device.name)
+                time.sleep(1.0)
+
+            # Close Control Center
+            self.swipe(int(w * 0.5), int(h * 0.9), int(w * 0.5), int(h * 0.5), duration=0.3)
+            time.sleep(0.5)
+            return True
+
+        except Exception:
+            logger.error("Failed to ensure WiFi off on %s", self.device.name, exc_info=True)
+            try:
+                self.press_button("home")
+            except Exception:
+                pass
+            return False
+
     # --- Airplane mode (IP rotation) ---
 
     def toggle_airplane_mode(self, wait_after: float = 6.0) -> bool:
