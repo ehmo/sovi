@@ -53,10 +53,10 @@ def get_current_role(device_id: str) -> str:
 def get_seeders() -> list[dict[str, Any]]:
     """Get all devices currently assigned as seeders."""
     return sync_execute(
-        """SELECT id, name, udid, wda_port, "current_role", role_changed_at,
-                  seeder_cooldown_until, status
+        """SELECT id, label AS name, udid, appium_port AS wda_port, "current_role",
+                  role_changed_at, seeder_cooldown_until, status
            FROM devices
-           WHERE "current_role" = 'seeder' AND status = 'active'
+           WHERE "current_role" = 'seeder' AND status IN ('available', 'in_use')
            ORDER BY role_changed_at""",
     )
 
@@ -64,11 +64,11 @@ def get_seeders() -> list[dict[str, Any]]:
 def get_warmers() -> list[dict[str, Any]]:
     """Get all active warmer devices."""
     return sync_execute(
-        """SELECT id, name, udid, wda_port, "current_role", role_changed_at,
-                  seeder_cooldown_until, status
+        """SELECT id, label AS name, udid, appium_port AS wda_port, "current_role",
+                  role_changed_at, seeder_cooldown_until, status
            FROM devices
-           WHERE "current_role" = 'warmer' AND status = 'active'
-           ORDER BY name""",
+           WHERE "current_role" = 'warmer' AND status IN ('available', 'in_use')
+           ORDER BY label""",
     )
 
 
@@ -97,7 +97,7 @@ def get_warmer_with_fewest_bindings() -> str | None:
            FROM devices d
            LEFT JOIN device_account_bindings dab
                 ON d.id = dab.device_id AND dab.unbound_at IS NULL
-           WHERE d."current_role" = 'warmer' AND d.status = 'active'
+           WHERE d."current_role" = 'warmer' AND d.status IN ('available', 'in_use')
              AND (d.seeder_cooldown_until IS NULL OR d.seeder_cooldown_until < now())
            GROUP BY d.id
            ORDER BY COUNT(dab.id) ASC, random()
@@ -117,7 +117,7 @@ def bootstrap_roles() -> None:
     Only runs if no devices have roles assigned (all are 'idle' or NULL).
     """
     active = sync_execute(
-        "SELECT id, name FROM devices WHERE status = 'active' ORDER BY random()",
+        "SELECT id, label AS name FROM devices WHERE status IN ('available', 'in_use') ORDER BY random()",
     )
     if not active:
         logger.warning("No active devices to bootstrap roles")
@@ -125,7 +125,7 @@ def bootstrap_roles() -> None:
 
     # Check if roles already assigned
     assigned = sync_execute(
-        """SELECT id FROM devices WHERE "current_role" IS NOT NULL AND "current_role" != 'idle' AND status = 'active'""",
+        """SELECT id FROM devices WHERE "current_role" IS NOT NULL AND "current_role" != 'idle' AND status IN ('available', 'in_use')""",
     )
     if assigned:
         logger.info("Roles already assigned to %d devices, skipping bootstrap", len(assigned))
@@ -211,8 +211,8 @@ def execute_rotation() -> dict[str, Any]:
 
     # Pick 2 new seeders from eligible warmers
     eligible = sync_execute(
-        """SELECT id, name FROM devices
-           WHERE "current_role" = 'warmer' AND status = 'active'
+        """SELECT id, label AS name FROM devices
+           WHERE "current_role" = 'warmer' AND status IN ('available', 'in_use')
              AND (seeder_cooldown_until IS NULL OR seeder_cooldown_until < now())
            ORDER BY role_changed_at ASC NULLS FIRST""",
     )
@@ -405,13 +405,7 @@ def claim_seeder_task(device_id: str) -> dict[str, Any] | None:
                 conn.commit()
                 return None
 
-            col_names = [
-                "id", "persona_id", "platform", "task_type",
-                "first_name", "last_name", "display_name",
-                "username_base", "gender", "date_of_birth", "age",
-                "niche_id", "bio_short", "occupation", "interests",
-            ]
-            task = dict(zip(col_names, row))
+            task = dict(row)
 
             # Claim it
             cur.execute(
