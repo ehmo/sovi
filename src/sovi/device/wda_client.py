@@ -132,6 +132,24 @@ class WDASession:
         except (httpx.ReadTimeout, httpx.ConnectTimeout):
             logger.warning("Timeout terminating %s", bundle_id)
 
+    def terminate_app_safe(self, bundle_id: str, timeout: float = 5.0) -> None:
+        """Terminate an app with a short timeout — best-effort, never blocks long.
+
+        When TikTok is in the foreground, WDA's terminate_app can block for
+        10s+ while it snapshots the accessibility hierarchy. This variant
+        uses a disposable client with a tight timeout.
+        """
+        try:
+            c = httpx.Client(base_url=self.device.base_url, timeout=timeout)
+            try:
+                c.post(f"{self._s}/wda/apps/terminate", json={"bundleId": bundle_id})
+            finally:
+                c.close()
+        except (httpx.ReadTimeout, httpx.ConnectTimeout):
+            logger.debug("Timeout terminating %s (safe, %.1fs limit)", bundle_id, timeout)
+        except Exception:
+            logger.debug("Error terminating %s (safe)", bundle_id, exc_info=True)
+
     def app_state(self, bundle_id: str) -> int:
         """Get app state: 1=not running, 2=bg, 3=suspended, 4=foreground."""
         resp = self.client.post(f"{self._s}/wda/apps/state", json={"bundleId": bundle_id})
@@ -335,7 +353,25 @@ class WDASession:
 
     def press_button(self, name: str) -> None:
         """Press a hardware button: 'home', 'volumeUp', 'volumeDown'."""
-        self.client.post(f"{self._s}/wda/pressButton", json={"name": name})
+        try:
+            self.client.post(f"{self._s}/wda/pressButton", json={"name": name})
+        except (httpx.ReadTimeout, httpx.ConnectTimeout):
+            logger.warning("Timeout pressing %s button (may have succeeded)", name)
+
+    def press_home_safe(self, timeout: float = 5.0) -> None:
+        """Press Home with a short dedicated timeout — for escaping stuck apps.
+
+        Uses a disposable client so that a hung WDA session doesn't block
+        the caller for 60s. Failures are silently swallowed.
+        """
+        try:
+            c = httpx.Client(base_url=self.device.base_url, timeout=timeout)
+            try:
+                c.post(f"{self._s}/wda/pressButton", json={"name": "home"})
+            finally:
+                c.close()
+        except Exception:
+            logger.debug("press_home_safe failed (%.1fs timeout)", timeout)
 
     # --- Safari navigation ---
 

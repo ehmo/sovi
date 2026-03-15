@@ -200,6 +200,17 @@ class DeviceScheduler:
                     self._stop_event.wait(60)
                     continue
 
+                # Ensure home screen before dispatching — prevents WDA from
+                # getting stuck on a foreground app (especially TikTok) that
+                # was left open by a previous crashed iteration.
+                try:
+                    _home_session = WDASession(device, timeout=10.0)
+                    _home_session.connect()
+                    _home_session.press_home_safe(timeout=5.0)
+                    _home_session.disconnect()
+                except Exception:
+                    logger.debug("Pre-dispatch home press failed on %s (non-fatal)", device.name)
+
                 # Check current role (may change between iterations via RoleRotator)
                 role = get_current_role(device_id)
 
@@ -810,31 +821,67 @@ class DeviceScheduler:
     def _reset_device(session: WDASession) -> None:
         """Return device to a clean home screen state after a task.
 
-        Terminates common apps that may have been left open (App Store,
-        Safari, social apps) and presses Home twice to ensure we're on
-        the springboard. Swallows all errors — this is best-effort recovery.
+        Presses Home FIRST to leave the foreground app (especially TikTok,
+        whose accessibility tree makes WDA hang), then terminates apps
+        with a short timeout. Swallows all errors — this is best-effort.
         """
-        for bundle in ("com.apple.AppStore", "com.apple.mobilesafari",
-                        "com.zhiliaoapp.musically", "com.burbn.instagram"):
+        # Step 1: Press Home to escape the foreground app BEFORE terminating.
+        # This is critical for TikTok — if WDA tries to terminate while
+        # TikTok is foregrounded, it snapshots the accessibility hierarchy
+        # which takes 10s+ and can make WDA completely unresponsive.
+        try:
+            session.press_home_safe(timeout=5.0)
+            time.sleep(0.5)
+            session.press_home_safe(timeout=5.0)
+            time.sleep(0.5)
+        except Exception:
+            pass
+
+        # Step 2: Terminate apps with short timeouts (5s each) — from
+        # springboard these should be fast since WDA doesn't need to
+        # snapshot the app's UI tree.
+        for bundle in ("com.zhiliaoapp.musically", "com.burbn.instagram",
+                        "com.apple.AppStore", "com.apple.mobilesafari"):
             try:
-                session.terminate_app(bundle)
+                session.terminate_app_safe(bundle, timeout=5.0)
             except Exception:
                 pass
+
+        # Step 3: Final Home press to ensure springboard
         try:
-            session.press_button("home")
-            time.sleep(0.5)
             session.press_button("home")
         except Exception:
             pass
 
     @staticmethod
     def _wait_for_wda(device: WDADevice, timeout: float = 30.0) -> bool:
-        """Wait for WDA to become responsive."""
+        """Wait for WDA to become responsive, then warm up the connection.
+
+        After WDA reports ready, the first real HTTP requests (session
+        creation, window/size) can take 30-60s as xcodebuild lazily
+        initializes. We send a few priming requests here so that
+        subsequent session.connect() calls are fast.
+        """
         deadline = time.time() + timeout
         while time.time() < deadline:
             try:
                 resp = httpx.get(f"{device.base_url}/status", timeout=5.0)
                 if resp.status_code == 200 and resp.json().get("value", {}).get("ready"):
+                    # Warm-up: prime WDA with a second /status hit and a
+                    # throwaway session + screen_size so the first real
+                    # session doesn't pay the cold-start penalty.
+                    try:
+                        httpx.get(f"{device.base_url}/status", timeout=10.0)
+                        _warmup = WDASession(device, timeout=15.0)
+                        _warmup.connect()
+                        _warmup.screen_size()
+                        # Press Home to ensure we're on springboard — avoids
+                        # WDA getting stuck snapshotting a foreground app
+                        _warmup.press_home_safe(timeout=5.0)
+                        _warmup.disconnect()
+                        logger.debug("WDA warm-up complete on %s", device.name)
+                    except Exception:
+                        logger.debug("WDA warm-up failed on %s (non-fatal)", device.name)
                     return True
             except Exception:
                 pass

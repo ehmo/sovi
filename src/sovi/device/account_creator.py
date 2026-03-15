@@ -24,15 +24,11 @@ from PIL import Image
 from sovi import events
 from sovi.auth import totp
 from sovi.auth.captcha_solver import detect_captcha_popup, solve_puzzle_local, solve_slide
-# TODO: Replace with on-device email_reader.py
-def _poll_stub(*args, **kwargs):
-    """Stub for quarantined email polling -- returns None with warning."""
-    logger.warning("QUARANTINED: email polling called but module is quarantined; returning None")
-    return None
 from sovi.auth.sms_verifier import cancel_verification, request_number, wait_for_code
 from sovi.crypto import encrypt
 from sovi.db import sync_execute, sync_execute_one
 from sovi.device.app_lifecycle import BUNDLES, delete_app, install_from_app_store
+from sovi.device.email_reader import poll_verification_code
 from sovi.device.wda_client import DeviceAutomation, WDASession
 
 logger = logging.getLogger(__name__)
@@ -628,14 +624,12 @@ def _signup_tiktok(
         logger.info("TikTok signup step 8: Email verification")
         _ss("verification_screen")
 
-        # Poll for verification code via IMAP or mail.tm API
+        # Poll for verification code on-device via Safari webmail
         code = None
-        if imap_config:
-            code = _poll_stub(imap_config, "tiktok", target_email=email, timeout=120)  # TODO: Replace with on-device email_reader.py
-        elif email_password:
-            code = _poll_stub(email, email_password, "tiktok", timeout=120)  # TODO: Replace with on-device email_reader.py
+        if email_password:
+            code = poll_verification_code(wda, email, email_password, "tiktok", device_id=device_id, timeout=120)
         else:
-            logger.warning("No email verification method available")
+            logger.warning("No email verification method available (no email_password)")
 
         if code:
             logger.info("Email verification code received: %s", code)
@@ -851,12 +845,10 @@ def _signup_instagram(
                 time.sleep(3)
                 break
 
-        # Confirmation code from email (IMAP or mail.tm API)
+        # Confirmation code from email on-device via Safari webmail
         code = None
-        if imap_config:
-            code = _poll_stub(imap_config, "instagram", target_email=email, timeout=90)  # TODO: Replace with on-device email_reader.py
-        elif email_password:
-            code = _poll_stub(email, email_password, "instagram", timeout=90)  # TODO: Replace with on-device email_reader.py
+        if email_password:
+            code = poll_verification_code(wda, email, email_password, "instagram", device_id=device_id, timeout=90)
 
         if code:
             code_field = wda.find_element(
@@ -1062,10 +1054,8 @@ def _signup_x_twitter(
         # Email verification code
         logger.info("X/Twitter signup: waiting for email verification code")
         code = None
-        if imap_config:
-            code = _poll_stub(imap_config, "x_twitter", target_email=email, timeout=120)  # TODO: Replace with on-device email_reader.py
-        elif email_password:
-            code = _poll_stub(email, email_password, "x_twitter", timeout=120)  # TODO: Replace with on-device email_reader.py
+        if email_password:
+            code = poll_verification_code(wda, email, email_password, "x_twitter", device_id=device_id, timeout=120)
 
         if code:
             logger.info("X verification code received: %s", code)

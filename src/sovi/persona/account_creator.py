@@ -15,6 +15,7 @@ from sovi import events
 from sovi.crypto import decrypt
 from sovi.db import sync_execute, sync_execute_one
 from sovi.device.account_creator import create_account
+from sovi.device.email_reader import poll_verification_code
 from sovi.device.wda_client import DeviceAutomation, WDASession
 from sovi.persona.email_creator import SAFARI_BUNDLE, close_safari, open_safari
 
@@ -65,18 +66,18 @@ def create_account_for_persona(
     password = decrypt(email_row["password"])
     email_account_id = str(email_row["id"])
 
-    # Email verification config quarantined — all providers use None
-    # TODO: Replace with on-device email_reader.py
+    # On-device email reader handles verification -- no server-side IMAP needed.
+    # Pass email password to all providers so poll_verification_code can read webmail.
     provider = email_row.get("provider", "")
-    imap_config = None
+    imap_config = None  # kept for backwards compat with device/account_creator.py signature
 
     events.emit("persona", "info", "platform_account_creation_started",
                 f"Creating {platform} account for {persona.get('display_name', '?')}",
                 device_id=device_id,
                 context={"persona_id": persona_id, "platform": platform})
 
-    # For mail.tm accounts, pass the email password for API-based code polling
-    email_pw = password if provider == "mailtm" else None
+    # All providers: pass email password so on-device reader can log in to webmail
+    email_pw = password
 
     if platform in APP_PLATFORMS:
         result = _create_app_account(wda, persona, platform, email, password, imap_config, device_id, email_password=email_pw)
@@ -159,7 +160,7 @@ def _create_web_account(
     elif platform == "facebook":
         return _signup_facebook(wda, auto, persona, email, password, device_id)
     elif platform == "linkedin":
-        return _signup_linkedin(wda, auto, persona, email, password, device_id)
+        return _signup_linkedin(wda, auto, persona, email, password, device_id, email_password=email_password)
     return None
 
 
@@ -352,23 +353,45 @@ def _signup_reddit(
             timeout=10, label="Reddit verification code field",
         )
         if verify_field and email_password:
-            # TODO: Replace with on-device email_reader.py
-            logger.warning("QUARANTINED: email polling called but module is quarantined; returning None")
-            code = None
+            # Read verification code on-device via Safari webmail.
+            # This navigates Safari away from Reddit to the email provider,
+            # so we need to navigate back to Reddit afterward.
+            code = poll_verification_code(
+                wda, email, email_password, "reddit",
+                device_id=device_id, timeout=90,
+            )
             if code:
                 logger.info("Got Reddit verification code: %s", code)
-                wda.element_click(verify_field["ELEMENT"])
-                time.sleep(0.5)
-                wda.type_text(code)
-                time.sleep(1)
-                _click_any(wda, ["Continue", "Next"])
-                time.sleep(4)
+                # Navigate Safari back to Reddit register page.
+                # Reddit stores signup state in cookies, so the verification
+                # step should still be active after navigating back.
+                open_safari(wda, "https://www.reddit.com/register")
+                time.sleep(5)
+
+                # Re-find the verification code field
+                verify_field = _wait_for_element(
+                    wda, "predicate string",
+                    'type == "XCUIElementTypeTextField" AND (name CONTAINS[c] "erification" OR name CONTAINS[c] "code")',
+                    timeout=10, label="Reddit verification code field (post-email)",
+                )
+                if verify_field:
+                    wda.element_click(verify_field["ELEMENT"])
+                    time.sleep(0.5)
+                    wda.type_text(code)
+                    time.sleep(1)
+                    _click_any(wda, ["Continue", "Next"])
+                    time.sleep(4)
+                else:
+                    logger.warning("Verification field not found after returning from email")
             else:
-                logger.warning("No verification code received — trying Skip")
+                # No code found -- navigate back to Reddit and try Skip
+                open_safari(wda, "https://www.reddit.com/register")
+                time.sleep(5)
+                logger.warning("No verification code received -- trying Skip")
                 _click_any(wda, ["Skip"])
                 time.sleep(3)
         elif verify_field:
-            logger.warning("Verification needed but no email_password — trying Skip")
+            logger.warning("Verification needed but no email_password -- trying Skip")
             _click_any(wda, ["Skip"])
             time.sleep(3)
 
@@ -660,6 +683,8 @@ def _signup_linkedin(
     email: str,
     password: str,
     device_id: str | None,
+    *,
+    email_password: str | None = None,
 ) -> dict | None:
     """LinkedIn signup via Safari."""
     username = _derive_username(persona, "linkedin")
@@ -715,9 +740,37 @@ def _signup_linkedin(
         _click_any(wda, ["Continue", "Next"])
         time.sleep(3)
 
-        # Email verification
-        # LinkedIn sends a verification code
-        time.sleep(5)
+        # Email verification -- LinkedIn sends a verification code
+        verify_field = _wait_for_element(
+            wda, "predicate string",
+            'type == "XCUIElementTypeTextField" AND (name CONTAINS[c] "code" OR name CONTAINS[c] "erification" OR name CONTAINS[c] "pin")',
+            timeout=10, label="LinkedIn verification code field",
+        )
+        if verify_field and email_password:
+            code = poll_verification_code(
+                wda, email, email_password, "linkedin",
+                device_id=device_id, timeout=90,
+            )
+            if code:
+                logger.info("Got LinkedIn verification code: %s", code)
+                # Navigate back to LinkedIn signup
+                open_safari(wda, "https://www.linkedin.com/signup")
+                time.sleep(5)
+                verify_field = _wait_for_element(
+                    wda, "predicate string",
+                    'type == "XCUIElementTypeTextField" AND (name CONTAINS[c] "code" OR name CONTAINS[c] "erification" OR name CONTAINS[c] "pin")',
+                    timeout=10, label="LinkedIn verification code field (post-email)",
+                )
+                if verify_field:
+                    wda.element_click(verify_field["ELEMENT"])
+                    time.sleep(0.5)
+                    wda.type_text(code)
+                    time.sleep(1)
+                    _click_any(wda, ["Verify", "Continue", "Next", "Submit"])
+                    time.sleep(3)
+        elif verify_field:
+            logger.warning("LinkedIn verification needed but no email_password")
+            time.sleep(5)
 
         auto.dismiss_popups(max_attempts=3)
         close_safari(wda)
