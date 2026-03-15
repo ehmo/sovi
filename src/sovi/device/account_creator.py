@@ -24,8 +24,11 @@ from PIL import Image
 from sovi import events
 from sovi.auth import totp
 from sovi.auth.captcha_solver import detect_captcha_popup, solve_puzzle_local, solve_slide
-from sovi.auth.email_verifier import ImapConfig, poll_for_code
-from sovi.persona.email_api import poll_for_code_mailtm
+# TODO: Replace with on-device email_reader.py
+def _poll_stub(*args, **kwargs):
+    """Stub for quarantined email polling -- returns None with warning."""
+    logger.warning("QUARANTINED: email polling called but module is quarantined; returning None")
+    return None
 from sovi.auth.sms_verifier import cancel_verification, request_number, wait_for_code
 from sovi.crypto import encrypt
 from sovi.db import sync_execute, sync_execute_one
@@ -231,7 +234,7 @@ def create_account(
     email: str,
     password: str,
     *,
-    imap_config: ImapConfig | None = None,
+    imap_config: Any = None,
     email_password: str | None = None,
     device_id: str | None = None,
 ) -> dict[str, Any] | None:
@@ -350,7 +353,7 @@ def _signup_tiktok(
     email: str,
     password: str,
     username: str,
-    imap_config: ImapConfig | None,
+    imap_config: Any,
     device_id: str | None,
     *,
     email_password: str | None = None,
@@ -571,7 +574,18 @@ def _signup_tiktok(
                     )
                     time.sleep(3)
 
-                    verify_png = _ss(f"captcha_verify_{captcha_round}_{target_pct:.0%}")
+                    # Retry screenshot up to 3 times (WDA timeouts common with TikTok)
+                    verify_png = None
+                    for _retry in range(3):
+                        verify_png = _ss(f"captcha_verify_{captcha_round}_{target_pct:.0%}")
+                        if verify_png:
+                            break
+                        time.sleep(2)
+
+                    if not verify_png:
+                        logger.warning("Screenshot timeout after drag — cannot verify, trying next target")
+                        continue
+
                     if not detect_captcha_popup(verify_png):
                         logger.info(
                             "Puzzle CAPTCHA solved at %.0f%% on round %d",
@@ -617,9 +631,9 @@ def _signup_tiktok(
         # Poll for verification code via IMAP or mail.tm API
         code = None
         if imap_config:
-            code = poll_for_code(imap_config, "tiktok", target_email=email, timeout=120)
+            code = _poll_stub(imap_config, "tiktok", target_email=email, timeout=120)  # TODO: Replace with on-device email_reader.py
         elif email_password:
-            code = poll_for_code_mailtm(email, email_password, "tiktok", timeout=120)
+            code = _poll_stub(email, email_password, "tiktok", timeout=120)  # TODO: Replace with on-device email_reader.py
         else:
             logger.warning("No email verification method available")
 
@@ -799,7 +813,7 @@ def _signup_instagram(
     email: str,
     password: str,
     username: str,
-    imap_config: ImapConfig | None,
+    imap_config: Any,
     device_id: str | None,
     *,
     email_password: str | None = None,
@@ -840,9 +854,9 @@ def _signup_instagram(
         # Confirmation code from email (IMAP or mail.tm API)
         code = None
         if imap_config:
-            code = poll_for_code(imap_config, "instagram", target_email=email, timeout=90)
+            code = _poll_stub(imap_config, "instagram", target_email=email, timeout=90)  # TODO: Replace with on-device email_reader.py
         elif email_password:
-            code = poll_for_code_mailtm(email, email_password, "instagram", timeout=90)
+            code = _poll_stub(email, email_password, "instagram", timeout=90)  # TODO: Replace with on-device email_reader.py
 
         if code:
             code_field = wda.find_element(
@@ -945,7 +959,7 @@ def _signup_x_twitter(
     email: str,
     password: str,
     username: str,
-    imap_config: ImapConfig | None,
+    imap_config: Any,
     device_id: str | None,
     *,
     email_password: str | None = None,
@@ -1049,9 +1063,9 @@ def _signup_x_twitter(
         logger.info("X/Twitter signup: waiting for email verification code")
         code = None
         if imap_config:
-            code = poll_for_code(imap_config, "x_twitter", target_email=email, timeout=120)
+            code = _poll_stub(imap_config, "x_twitter", target_email=email, timeout=120)  # TODO: Replace with on-device email_reader.py
         elif email_password:
-            code = poll_for_code_mailtm(email, email_password, "x_twitter", timeout=120)
+            code = _poll_stub(email, email_password, "x_twitter", timeout=120)  # TODO: Replace with on-device email_reader.py
 
         if code:
             logger.info("X verification code received: %s", code)
@@ -1134,7 +1148,7 @@ def auto_create_account(
     email: str,
     password: str,
     *,
-    imap_config: ImapConfig | None = None,
+    imap_config: Any = None,
     device_id: str | None = None,
 ) -> dict[str, Any] | None:
     """Auto-create an account on the platform with the least-served niche.

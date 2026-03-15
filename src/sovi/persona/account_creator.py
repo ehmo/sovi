@@ -12,7 +12,6 @@ import time
 from typing import Any
 
 from sovi import events
-from sovi.auth.email_verifier import ImapConfig
 from sovi.crypto import decrypt
 from sovi.db import sync_execute, sync_execute_one
 from sovi.device.account_creator import create_account
@@ -66,17 +65,10 @@ def create_account_for_persona(
     password = decrypt(email_row["password"])
     email_account_id = str(email_row["id"])
 
-    # Build email verification config based on provider
-    if email_row.get("provider") == "mailtm":
-        # mail.tm uses REST API — pass None for imap_config, use API-based polling
-        imap_config = None
-    else:
-        imap_config = ImapConfig(
-            host=email_row["imap_host"],
-            username=email,
-            password=password,
-            port=email_row["imap_port"],
-        )
+    # Email verification config quarantined — all providers use None
+    # TODO: Replace with on-device email_reader.py
+    provider = email_row.get("provider", "")
+    imap_config = None
 
     events.emit("persona", "info", "platform_account_creation_started",
                 f"Creating {platform} account for {persona.get('display_name', '?')}",
@@ -84,7 +76,7 @@ def create_account_for_persona(
                 context={"persona_id": persona_id, "platform": platform})
 
     # For mail.tm accounts, pass the email password for API-based code polling
-    email_pw = password if email_row.get("provider") == "mailtm" else None
+    email_pw = password if provider == "mailtm" else None
 
     if platform in APP_PLATFORMS:
         result = _create_app_account(wda, persona, platform, email, password, imap_config, device_id, email_password=email_pw)
@@ -126,7 +118,7 @@ def _create_app_account(
     platform: str,
     email: str,
     password: str,
-    imap_config: ImapConfig | None,
+    imap_config: Any,
     device_id: str | None,
     *,
     email_password: str | None = None,
@@ -149,7 +141,7 @@ def _create_web_account(
     platform: str,
     email: str,
     password: str,
-    imap_config: ImapConfig | None,
+    imap_config: Any,
     device_id: str | None,
     *,
     email_password: str | None = None,
@@ -360,9 +352,9 @@ def _signup_reddit(
             timeout=10, label="Reddit verification code field",
         )
         if verify_field and email_password:
-            from sovi.persona.email_api import poll_for_code_mailtm
-            logger.info("Polling mail.tm for Reddit verification code...")
-            code = poll_for_code_mailtm(email, email_password, "reddit", timeout=90, poll_interval=5)
+            # TODO: Replace with on-device email_reader.py
+            logger.warning("QUARANTINED: email polling called but module is quarantined; returning None")
+            code = None
             if code:
                 logger.info("Got Reddit verification code: %s", code)
                 wda.element_click(verify_field["ELEMENT"])
