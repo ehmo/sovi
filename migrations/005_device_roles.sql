@@ -34,7 +34,7 @@ CREATE INDEX IF NOT EXISTS idx_role_active_role
 -- ALTER devices — add role tracking columns
 -- =============================================================================
 
-ALTER TABLE devices ADD COLUMN IF NOT EXISTS current_role device_role DEFAULT 'idle';
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS "current_role" device_role DEFAULT 'idle';
 ALTER TABLE devices ADD COLUMN IF NOT EXISTS role_changed_at TIMESTAMPTZ;
 ALTER TABLE devices ADD COLUMN IF NOT EXISTS seeder_cooldown_until TIMESTAMPTZ;
 
@@ -99,17 +99,17 @@ BEGIN
 
     -- Set cooldown on demoted seeders
     UPDATE devices
-    SET current_role = 'warmer',
+    SET "current_role" = 'warmer',
         role_changed_at = now(),
         seeder_cooldown_until = now() + interval '30 minutes'
-    WHERE current_role = 'seeder'
+    WHERE "current_role" = 'seeder'
       AND id != ALL(p_new_seeder_ids);
 
     -- Create warmer assignments for demoted seeders
     INSERT INTO device_role_assignments (device_id, role, rotation_id, cooldown_until)
     SELECT id, 'warmer', p_rotation_id, now() + interval '30 minutes'
     FROM devices
-    WHERE current_role = 'warmer'
+    WHERE "current_role" = 'warmer'
       AND id NOT IN (SELECT device_id FROM device_role_assignments WHERE role = 'seeder' AND ended_at IS NULL);
 
     -- End current warmer assignments for promoted devices
@@ -123,7 +123,7 @@ BEGIN
     SELECT unnest(p_new_seeder_ids), 'seeder', p_rotation_id;
 
     -- Update denormalized current_role
-    UPDATE devices SET current_role = 'seeder', role_changed_at = now()
+    UPDATE devices SET "current_role" = 'seeder', role_changed_at = now()
     WHERE id = ANY(p_new_seeder_ids);
 END;
 $$ LANGUAGE plpgsql;

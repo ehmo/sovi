@@ -44,7 +44,7 @@ SEEDER_COOLDOWN_MINUTES = 30
 def get_current_role(device_id: str) -> str:
     """Get the current role for a device. Returns 'idle' if unassigned."""
     row = sync_execute_one(
-        "SELECT current_role FROM devices WHERE id = %s",
+        'SELECT "current_role" FROM devices WHERE id = %s',
         (device_id,),
     )
     return row["current_role"] if row and row["current_role"] else IDLE
@@ -53,10 +53,10 @@ def get_current_role(device_id: str) -> str:
 def get_seeders() -> list[dict[str, Any]]:
     """Get all devices currently assigned as seeders."""
     return sync_execute(
-        """SELECT id, name, udid, wda_port, current_role, role_changed_at,
+        """SELECT id, name, udid, wda_port, "current_role", role_changed_at,
                   seeder_cooldown_until, status
            FROM devices
-           WHERE current_role = 'seeder' AND status = 'active'
+           WHERE "current_role" = 'seeder' AND status = 'active'
            ORDER BY role_changed_at""",
     )
 
@@ -64,10 +64,10 @@ def get_seeders() -> list[dict[str, Any]]:
 def get_warmers() -> list[dict[str, Any]]:
     """Get all active warmer devices."""
     return sync_execute(
-        """SELECT id, name, udid, wda_port, current_role, role_changed_at,
+        """SELECT id, name, udid, wda_port, "current_role", role_changed_at,
                   seeder_cooldown_until, status
            FROM devices
-           WHERE current_role = 'warmer' AND status = 'active'
+           WHERE "current_role" = 'warmer' AND status = 'active'
            ORDER BY name""",
     )
 
@@ -97,7 +97,7 @@ def get_warmer_with_fewest_bindings() -> str | None:
            FROM devices d
            LEFT JOIN device_account_bindings dab
                 ON d.id = dab.device_id AND dab.unbound_at IS NULL
-           WHERE d.current_role = 'warmer' AND d.status = 'active'
+           WHERE d."current_role" = 'warmer' AND d.status = 'active'
              AND (d.seeder_cooldown_until IS NULL OR d.seeder_cooldown_until < now())
            GROUP BY d.id
            ORDER BY COUNT(dab.id) ASC, random()
@@ -125,7 +125,7 @@ def bootstrap_roles() -> None:
 
     # Check if roles already assigned
     assigned = sync_execute(
-        "SELECT id FROM devices WHERE current_role IS NOT NULL AND current_role != 'idle' AND status = 'active'",
+        """SELECT id FROM devices WHERE "current_role" IS NOT NULL AND "current_role" != 'idle' AND status = 'active'""",
     )
     if assigned:
         logger.info("Roles already assigned to %d devices, skipping bootstrap", len(assigned))
@@ -140,7 +140,7 @@ def bootstrap_roles() -> None:
             for device in seeders:
                 device_id = str(device["id"])
                 cur.execute(
-                    """UPDATE devices SET current_role = 'seeder', role_changed_at = now()
+                    """UPDATE devices SET "current_role" = 'seeder', role_changed_at = now()
                        WHERE id = %s""",
                     (device_id,),
                 )
@@ -154,7 +154,7 @@ def bootstrap_roles() -> None:
             for device in warmers:
                 device_id = str(device["id"])
                 cur.execute(
-                    """UPDATE devices SET current_role = 'warmer', role_changed_at = now()
+                    """UPDATE devices SET "current_role" = 'warmer', role_changed_at = now()
                        WHERE id = %s""",
                     (device_id,),
                 )
@@ -212,7 +212,7 @@ def execute_rotation() -> dict[str, Any]:
     # Pick 2 new seeders from eligible warmers
     eligible = sync_execute(
         """SELECT id, name FROM devices
-           WHERE current_role = 'warmer' AND status = 'active'
+           WHERE "current_role" = 'warmer' AND status = 'active'
              AND (seeder_cooldown_until IS NULL OR seeder_cooldown_until < now())
            ORDER BY role_changed_at ASC NULLS FIRST""",
     )
@@ -253,7 +253,7 @@ def execute_rotation() -> dict[str, Any]:
                 )
                 # Update device
                 cur.execute(
-                    """UPDATE devices SET current_role = 'warmer', role_changed_at = now(),
+                    """UPDATE devices SET "current_role" = 'warmer', role_changed_at = now(),
                        seeder_cooldown_until = now() + interval '%s minutes'
                        WHERE id = %s""",
                     (SEEDER_COOLDOWN_MINUTES, sid),
@@ -278,7 +278,7 @@ def execute_rotation() -> dict[str, Any]:
                 )
                 # Update device
                 cur.execute(
-                    """UPDATE devices SET current_role = 'seeder', role_changed_at = now(),
+                    """UPDATE devices SET "current_role" = 'seeder', role_changed_at = now(),
                        seeder_cooldown_until = NULL
                        WHERE id = %s""",
                     (sid,),
