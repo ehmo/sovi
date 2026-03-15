@@ -52,3 +52,7 @@ postgres_data/
 redis_data/
 temporal_data/
 .claude/
+
+# Dolt database files (added by bd init)
+.dolt/
+*.db
