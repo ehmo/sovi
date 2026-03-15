@@ -347,6 +347,11 @@ class DeviceScheduler:
                 with conn.cursor() as cur:
                     # Use FOR UPDATE SKIP LOCKED to avoid conflicts between device threads
                     # JOIN device_account_bindings to enforce device affinity
+                    warmable_states = [
+                        AccountState.CREATED, AccountState.WARMING_P1,
+                        AccountState.WARMING_P2, AccountState.WARMING_P3,
+                        AccountState.ACTIVE,
+                    ]
                     cur.execute(
                         """SELECT a.id, a.platform, a.username, a.current_state,
                                   a.warming_day_count, a.email_enc, a.password_enc,
@@ -357,8 +362,8 @@ class DeviceScheduler:
                                 ON a.id = dab.account_id
                                 AND dab.device_id = %s
                                 AND dab.unbound_at IS NULL
-                           WHERE a.current_state IN %s
-                             AND a.platform IN %s
+                           WHERE a.current_state = ANY(%s)
+                             AND a.platform = ANY(%s)
                              AND a.deleted_at IS NULL
                              AND (a.last_warmed_at IS NULL
                                   OR a.last_warmed_at < CURRENT_DATE)
@@ -375,9 +380,8 @@ class DeviceScheduler:
                            FOR UPDATE OF a SKIP LOCKED""",
                         (
                             device_id,
-                            (AccountState.CREATED, AccountState.WARMING_P1, AccountState.WARMING_P2,
-                             AccountState.WARMING_P3, AccountState.ACTIVE),
-                            WARMABLE_PLATFORMS,
+                            warmable_states,
+                            list(WARMABLE_PLATFORMS),
                             AccountState.CREATED, AccountState.WARMING_P1,
                             AccountState.WARMING_P2, AccountState.WARMING_P3,
                             AccountState.ACTIVE,
@@ -389,12 +393,7 @@ class DeviceScheduler:
                     if row:
                         return {
                             "type": "warm",
-                            "account": dict(zip(
-                                ["id", "platform", "username", "current_state",
-                                 "warming_day_count", "email_enc", "password_enc",
-                                 "totp_secret_enc", "niche_id", "niche_slug"],
-                                row,
-                            )),
+                            "account": dict(row),
                         }
         except Exception:
             logger.error("Error getting next warming task", exc_info=True)
@@ -459,11 +458,11 @@ class DeviceScheduler:
                     cur.execute(
                         """SELECT platform, COUNT(*) as cnt
                            FROM accounts
-                           WHERE platform IN %s AND deleted_at IS NULL
+                           WHERE platform = ANY(%s) AND deleted_at IS NULL
                            GROUP BY platform""",
-                        (WARMABLE_PLATFORMS,),
+                        (list(WARMABLE_PLATFORMS),),
                     )
-                    counts = {row[0]: row[1] for row in cur.fetchall()}
+                    counts = {row["platform"]: row["cnt"] for row in cur.fetchall()}
                     conn.commit()
 
             tt_count = counts.get("tiktok", 0)

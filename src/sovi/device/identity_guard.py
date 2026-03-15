@@ -73,7 +73,7 @@ def run_pre_session_checks(
 
     checkers = [
         ("no_concurrent_session", lambda: check_no_concurrent_session(device_id)),
-        ("proxy_assigned", lambda: check_proxy_assigned(device_id)),
+        # proxy_assigned skipped — clean room uses cellular only, no proxies
         ("daily_cap", lambda: check_daily_cap(device_id)),
         ("cooldown", lambda: check_cooldown(device_id)),
     ]

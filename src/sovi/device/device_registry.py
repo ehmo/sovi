@@ -24,20 +24,18 @@ logger = logging.getLogger(__name__)
 
 
 def get_active_devices() -> list[dict[str, Any]]:
-    """Get all operational devices, ordered by label.
+    """Get all operational devices, ordered by name.
 
-    Maps DB columns to the names the rest of the codebase expects:
-    label→name, appium_port→wda_port, last_heartbeat→connected_since.
-    'Active' means status IN ('available', 'in_use').
+    'Active' means status = 'active'.
     """
     return sync_execute(
-        """SELECT id, label AS name, model, udid, ios_version,
-                  appium_port AS wda_port, status, "current_role",
-                  last_heartbeat AS connected_since,
+        """SELECT id, name, model, udid, ios_version,
+                  wda_port, status, "current_role",
+                  connected_since,
                   role_changed_at, seeder_cooldown_until
            FROM devices
-           WHERE status IN ('available', 'in_use')
-           ORDER BY label"""
+           WHERE status = 'active'
+           ORDER BY name"""
     )
 
 
@@ -50,7 +48,7 @@ def get_device_by_id(device_id: UUID | str) -> dict[str, Any] | None:
 
 def get_device_by_name(name: str) -> dict[str, Any] | None:
     return sync_execute_one(
-        "SELECT * FROM devices WHERE label = %s",
+        "SELECT * FROM devices WHERE name = %s",
         (name,),
     )
 
@@ -60,8 +58,8 @@ def to_wda_device(row: dict[str, Any]) -> WDADevice:
 
     Works with both aliased rows (from get_active_devices) and raw rows.
     """
-    name = row.get("name") or row.get("label") or row["udid"][:12]
-    wda_port = row.get("wda_port") or row.get("appium_port") or 8100
+    name = row.get("name") or row["udid"][:12]
+    wda_port = row.get("wda_port") or 8100
     return WDADevice(
         name=name,
         udid=row["udid"],
@@ -72,7 +70,7 @@ def to_wda_device(row: dict[str, Any]) -> WDADevice:
 def update_heartbeat(device_id: UUID | str) -> None:
     """Update device heartbeat timestamp."""
     sync_execute(
-        "UPDATE devices SET last_heartbeat = now(), updated_at = now(), status = 'in_use' WHERE id = %s",
+        "UPDATE devices SET connected_since = now(), updated_at = now() WHERE id = %s",
         (str(device_id),),
     )
 
@@ -94,14 +92,14 @@ def register_device(
 ) -> dict[str, Any] | None:
     """Register a new device or update an existing one (by UDID)."""
     rows = sync_execute(
-        """INSERT INTO devices (label, model, udid, ios_version, appium_port, status, last_heartbeat)
-           VALUES (%s, %s, %s, %s, %s, 'available', now())
+        """INSERT INTO devices (name, model, udid, ios_version, wda_port, status, connected_since)
+           VALUES (%s, %s, %s, %s, %s, 'active', now())
            ON CONFLICT (udid) DO UPDATE SET
-               label = EXCLUDED.label,
-               appium_port = EXCLUDED.appium_port,
+               name = EXCLUDED.name,
+               wda_port = EXCLUDED.wda_port,
                ios_version = EXCLUDED.ios_version,
-               status = 'available',
-               last_heartbeat = now(),
+               status = 'active',
+               connected_since = now(),
                updated_at = now()
            RETURNING *""",
         (name, model, udid, ios_version, wda_port),
@@ -117,13 +115,13 @@ def register_device(
 async def async_get_devices() -> list[dict[str, Any]]:
     """Get all devices (async, for dashboard)."""
     return await execute(
-        """SELECT id, label AS name, model, udid, ios_version,
-                  appium_port AS wda_port, status, "current_role",
-                  last_heartbeat AS connected_since,
+        """SELECT id, name, model, udid, ios_version,
+                  wda_port, status, "current_role",
+                  connected_since,
                   role_changed_at, seeder_cooldown_until,
                   created_at, updated_at
            FROM devices
-           ORDER BY label"""
+           ORDER BY name"""
     )
 
 
@@ -138,14 +136,14 @@ async def async_register_device(
     name: str, udid: str, model: str, ios_version: str, wda_port: int,
 ) -> dict[str, Any] | None:
     rows = await execute(
-        """INSERT INTO devices (label, model, udid, ios_version, appium_port, status, last_heartbeat)
-           VALUES (%s, %s, %s, %s, %s, 'available', now())
+        """INSERT INTO devices (name, model, udid, ios_version, wda_port, status, connected_since)
+           VALUES (%s, %s, %s, %s, %s, 'active', now())
            ON CONFLICT (udid) DO UPDATE SET
-               label = EXCLUDED.label,
-               appium_port = EXCLUDED.appium_port,
+               name = EXCLUDED.name,
+               wda_port = EXCLUDED.wda_port,
                ios_version = EXCLUDED.ios_version,
-               status = 'available',
-               last_heartbeat = now(),
+               status = 'active',
+               connected_since = now(),
                updated_at = now()
            RETURNING *""",
         (name, model, udid, ios_version, wda_port),
@@ -181,9 +179,9 @@ def generate_launchd_plists(device: dict[str, Any], output_dir: str | None = Non
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
 
-    name = (device.get("name") or device.get("label") or "unknown").lower().replace(" ", "-")
+    name = (device.get("name") or "unknown").lower().replace(" ", "-")
     udid = device["udid"]
-    wda_port = device.get("wda_port") or device.get("appium_port") or 8100
+    wda_port = device.get("wda_port") or 8100
     generated = []
 
     # iproxy plist
