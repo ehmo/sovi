@@ -19,27 +19,33 @@ import logging
 import random
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
 import httpx
-import psycopg
 
 from sovi import events
 from sovi.config import settings
-from sovi.crypto import decrypt
 from sovi.db import sync_conn, sync_execute, sync_execute_one
 from sovi.models import AccountState
-from sovi.device.app_lifecycle import BUNDLES, delete_app, install_from_app_store, login_account, reset_idfa
+from sovi.device._clean_room import enforce as enforce_clean_room
+from sovi.device.app_lifecycle import delete_app, install_from_app_store, login_account, reset_idfa
 from sovi.device.device_registry import get_active_devices, set_device_status, to_wda_device, update_heartbeat
 from sovi.device.identity_guard import (
-    PreSessionReport,
     end_session,
     run_pre_session_checks,
     start_session,
 )
-from sovi.device.proxy_client import get_device_proxy
+from sovi.device.roles import (
+    SEEDER,
+    WARMER,
+    RoleRotator,
+    get_current_role,
+    is_in_cooldown,
+    populate_seeder_tasks,
+)
+from sovi.device.seeder import run_seeder_cycle
 from sovi.device.warming import WarmingConfig, WarmingPhase, run_warming
 from sovi.device.wda_client import WDADevice, WDASession
 
@@ -74,9 +80,13 @@ class DeviceScheduler:
         self._threads: dict[str, DeviceThread] = {}
         self._stop_event = threading.Event()
         self._lock = threading.Lock()
+        self._rotator = RoleRotator()
 
     def start(self) -> None:
         """Start scheduler threads for all active devices."""
+        # Block quarantined modules from being imported in device context
+        enforce_clean_room()
+
         self._stop_event.clear()
         devices = get_active_devices()
 
@@ -85,6 +95,15 @@ class DeviceScheduler:
             events.emit("scheduler", "warning", "no_devices",
                        "Scheduler started but no active devices found")
             return
+
+        # Start role rotator (bootstraps roles on first run, rotates every 4-6h)
+        self._rotator.start()
+
+        # Populate seeder task queue from pending personas
+        try:
+            populate_seeder_tasks()
+        except Exception:
+            logger.error("Failed to populate seeder tasks at startup", exc_info=True)
 
         events.emit("scheduler", "info", "scheduler_started",
                     f"Starting scheduler with {len(devices)} devices",
@@ -110,6 +129,7 @@ class DeviceScheduler:
         """Gracefully stop all scheduler threads."""
         logger.info("Stopping scheduler...")
         self._stop_event.set()
+        self._rotator.stop()
 
         events.emit("scheduler", "info", "scheduler_stopping",
                     "Scheduler stop requested")
@@ -150,7 +170,12 @@ class DeviceScheduler:
         }
 
     def _device_loop(self, device_row: dict[str, Any], dt: DeviceThread) -> None:
-        """Main loop for a single device thread."""
+        """Main loop for a single device thread.
+
+        Dispatches to seeder or warmer behaviour based on the device's
+        current role (checked every iteration so role rotations take
+        effect without restarting threads).
+        """
         device = to_wda_device(device_row)
         device_id = dt.device_id
 
@@ -175,64 +200,23 @@ class DeviceScheduler:
                     self._stop_event.wait(60)
                     continue
 
-                # Get next task (device-affinity aware)
-                dt.current_task = "selecting_task"
-                task = self._get_next_task(device_id)
+                # Check current role (may change between iterations via RoleRotator)
+                role = get_current_role(device_id)
 
-                if task is None:
-                    dt.current_task = "idle"
+                if role == SEEDER:
+                    self._run_seeder_iteration(device, dt)
+                elif role == WARMER:
+                    # Respect post-seeder cooldown
+                    if is_in_cooldown(device_id):
+                        dt.current_task = "seeder_cooldown"
+                        logger.debug("%s in post-seeder cooldown, sleeping 60s", device.name)
+                        self._stop_event.wait(60)
+                        continue
+                    self._run_warmer_iteration(device, dt)
+                else:
+                    # Idle / unassigned — wait for role bootstrap
+                    dt.current_task = "idle:no_role"
                     self._stop_event.wait(30)
-                    continue
-
-                # Pre-session identity checks
-                account_id = None
-                if task["type"] == "warm":
-                    account_id = str(task["account"]["id"])
-
-                dt.current_task = "identity_checks"
-                report = run_pre_session_checks(device_id, account_id)
-
-                if not report.passed:
-                    wait = max(report.wait_seconds, 30)
-                    dt.current_task = f"cooldown:{wait:.0f}s"
-                    logger.info("Pre-session rejected for %s, waiting %.0fs", device.name, wait)
-                    self._stop_event.wait(wait)
-                    continue
-
-                # Resolve proxy for session log
-                proxy = get_device_proxy(device_id)
-                proxy_id = str(proxy["id"]) if proxy else None
-
-                # Start session log
-                session_type = "warming" if task["type"] == "warm" else "creation"
-                session_id = start_session(
-                    device_id, account_id, session_type,
-                    proxy_id=proxy_id,
-                    identity_checks=report.to_dict(),
-                )
-
-                # Execute task
-                outcome = "failed"
-                if task["type"] == "warm":
-                    outcome = "success" if self._execute_warming(device, dt, task) else "failed"
-                elif task["type"] == "create":
-                    outcome = "success" if self._execute_creation(device, dt, task) else "failed"
-
-                # End session log
-                if session_id:
-                    end_session(session_id, outcome)
-
-                dt.sessions_today += 1
-                dt.last_session_at = datetime.now(timezone.utc)
-
-                # Randomized cooldown: uniform(5, 15) min + jitter(±2 min)
-                dt.current_task = "cooldown"
-                cooldown = random.uniform(
-                    settings.min_cooldown_seconds,
-                    settings.max_cooldown_seconds,
-                ) + random.uniform(-120, 120)
-                cooldown = max(cooldown, 60)  # floor at 1 min
-                self._stop_event.wait(cooldown)
 
             except Exception:
                 dt.error = "Unhandled exception in device loop"
@@ -246,6 +230,93 @@ class DeviceScheduler:
         dt.running = False
         dt.current_task = "stopped"
         logger.info("Device loop ended: %s", device.name)
+
+    # ------------------------------------------------------------------
+    # Seeder iteration
+    # ------------------------------------------------------------------
+
+    def _run_seeder_iteration(self, device: WDADevice, dt: DeviceThread) -> None:
+        """Execute one seeder cycle: claim task → create email/account on-device."""
+        dt.current_task = "seeder:claiming"
+        session = WDASession(device)
+        try:
+            session.connect()
+            result = run_seeder_cycle(session, dt.device_id, device.name)
+            if result:
+                dt.sessions_today += 1
+                dt.last_session_at = datetime.now(timezone.utc)
+            else:
+                # No tasks available — short sleep before checking again
+                dt.current_task = "seeder:idle"
+                self._stop_event.wait(30)
+        except Exception:
+            logger.error("Seeder iteration failed for %s", device.name, exc_info=True)
+            dt.error = "seeder_error"
+            self._stop_event.wait(60)
+        finally:
+            session.disconnect()
+
+    # ------------------------------------------------------------------
+    # Warmer iteration
+    # ------------------------------------------------------------------
+
+    def _run_warmer_iteration(self, device: WDADevice, dt: DeviceThread) -> None:
+        """Execute one warming iteration for a warmer device."""
+        device_id = dt.device_id
+
+        # Get next warming task (device-affinity aware)
+        dt.current_task = "selecting_task"
+        task = self._get_next_task(device_id)
+
+        if task is None:
+            dt.current_task = "idle"
+            self._stop_event.wait(30)
+            return
+
+        # Pre-session identity checks (skip proxy — cellular connection)
+        account_id = None
+        if task["type"] == "warm":
+            account_id = str(task["account"]["id"])
+
+        dt.current_task = "identity_checks"
+        report = run_pre_session_checks(device_id, account_id)
+
+        if not report.passed:
+            wait = max(report.wait_seconds, 30)
+            dt.current_task = f"cooldown:{wait:.0f}s"
+            logger.info("Pre-session rejected for %s, waiting %.0fs", device.name, wait)
+            self._stop_event.wait(wait)
+            return
+
+        # Session log (no proxy — all traffic is cellular)
+        session_type = "warming" if task["type"] == "warm" else "creation"
+        session_id = start_session(
+            device_id, account_id, session_type,
+            identity_checks=report.to_dict(),
+        )
+
+        # Execute task
+        outcome = "failed"
+        if task["type"] == "warm":
+            outcome = "success" if self._execute_warming(device, dt, task) else "failed"
+        elif task["type"] == "create":
+            outcome = "success" if self._execute_creation(device, dt, task) else "failed"
+
+        # End session log
+        if session_id:
+            end_session(session_id, outcome)
+
+        dt.sessions_today += 1
+        dt.last_session_at = datetime.now(timezone.utc)
+
+        # Randomized cooldown: uniform(5, 15) min + jitter(±2 min)
+        dt.current_task = "cooldown"
+        cooldown = random.uniform(
+            settings.min_cooldown_seconds,
+            settings.max_cooldown_seconds,
+        ) + random.uniform(-120, 120)
+        cooldown = max(cooldown, 60)  # floor at 1 min
+        self._stop_event.wait(cooldown)
 
     def _get_next_task(self, device_id: str) -> dict[str, Any] | None:
         """Determine the next task for a device.
@@ -517,6 +588,11 @@ class DeviceScheduler:
                             "new_state": new_state,
                             "warming_day": new_day_count,
                         })
+
+            # Distribution handoff: after 14+ warming days, unbind from device
+            if new_day_count >= 14 and new_state == AccountState.ACTIVE:
+                self._handoff_to_distribution(account_id, device_id, platform, username)
+
             success = True
 
         except Exception:
@@ -672,6 +748,44 @@ class DeviceScheduler:
                     device_id=device_id,
                     context={"platform": platform, "reason": "email_provider_not_configured"})
         return False  # no-op until email provider is integrated
+
+    @staticmethod
+    def _handoff_to_distribution(
+        account_id: str,
+        device_id: str,
+        platform: str,
+        username: str,
+    ) -> None:
+        """Unbind a fully warmed account from its device for distribution.
+
+        After 14+ warming days the account is mature enough for content
+        posting. Unbinding frees the device slot for a new account.
+        """
+        try:
+            sync_execute(
+                """UPDATE device_account_bindings
+                   SET unbound_at = now(), unbind_reason = 'distribution_handoff'
+                   WHERE account_id = %s AND device_id = %s AND unbound_at IS NULL""",
+                (account_id, device_id),
+            )
+            sync_execute(
+                """UPDATE accounts
+                   SET current_state = 'active', warmer_device_id = NULL, updated_at = now()
+                   WHERE id = %s""",
+                (account_id,),
+            )
+            events.emit("scheduler", "info", "distribution_handoff",
+                        f"Account {platform}/{username} handed off to distribution",
+                        device_id=device_id, account_id=account_id,
+                        context={
+                            "platform": platform,
+                            "username": username,
+                        })
+            logger.info("Handed off %s/%s to distribution (unbound from %s)",
+                        platform, username, device_id[:8])
+        except Exception:
+            logger.error("Distribution handoff failed for %s/%s",
+                         platform, username, exc_info=True)
 
     @staticmethod
     def _reset_device(session: WDASession) -> None:
