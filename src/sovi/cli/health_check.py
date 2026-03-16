@@ -43,7 +43,7 @@ APPS = {
 def _get_devices() -> list[dict]:
     """Get device list from DB, falling back to hardcoded list."""
     try:
-        rows = sync_execute("SELECT name, udid, wda_port, status FROM devices ORDER BY name")
+        rows = sync_execute("SELECT label AS name, udid, appium_port AS wda_port, status FROM devices ORDER BY label")
         if rows:
             return rows
     except Exception:
