@@ -168,7 +168,7 @@ def seed_hooks() -> int:
                            (hook_text, template_text, hook_category, emotional_tone,
                             thompson_alpha, thompson_beta)
                            VALUES (%s, %s, %s, %s, 1.0, 1.0)
-                           ON CONFLICT DO NOTHING""",
+                           ON CONFLICT (hook_text, hook_category) DO NOTHING""",
                         (template, template, category, tone),
                     )
                     count += 1
