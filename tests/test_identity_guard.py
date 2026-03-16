@@ -160,6 +160,7 @@ class TestCheckDailyCap:
             result = check_daily_cap(DEVICE_ID)
         assert result.passed is True
         assert "5/24" in result.detail
+        assert "successful sessions" in result.detail
 
     def test_at_cap(self, mock_ig_db):
         mock_ig_db.execute_one.return_value = {"cnt": 24}
@@ -168,6 +169,7 @@ class TestCheckDailyCap:
             result = check_daily_cap(DEVICE_ID)
         assert result.passed is False
         assert result.wait_seconds == 3600
+        assert "successful sessions" in result.detail
 
     def test_no_row_defaults_zero(self, mock_ig_db):
         mock_ig_db.execute_one.return_value = None
@@ -175,6 +177,16 @@ class TestCheckDailyCap:
             mock_settings.max_sessions_per_device_day = 24
             result = check_daily_cap(DEVICE_ID)
         assert result.passed is True
+
+    def test_only_counts_completed_successes(self, mock_ig_db):
+        mock_ig_db.execute_one.return_value = {"cnt": 3}
+        with patch("sovi.device.identity_guard.settings") as mock_settings:
+            mock_settings.max_sessions_per_device_day = 24
+            check_daily_cap(DEVICE_ID)
+
+        query = mock_ig_db.execute_one.call_args[0][0]
+        assert "ended_at IS NOT NULL" in query
+        assert "outcome = 'success'" in query
 
 
 class TestCheckCooldown:

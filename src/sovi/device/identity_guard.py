@@ -156,11 +156,13 @@ def check_proxy_assigned(device_id: str) -> CheckResult:
 
 
 def check_daily_cap(device_id: str) -> CheckResult:
-    """Ensure device hasn't exceeded daily session cap."""
+    """Ensure device hasn't exceeded its daily cap for successful sessions."""
     row = sync_execute_one(
         """SELECT COUNT(*) as cnt FROM session_log
            WHERE device_id = %s
-             AND started_at >= CURRENT_DATE""",
+             AND started_at >= CURRENT_DATE
+             AND ended_at IS NOT NULL
+             AND outcome = 'success'""",
         (device_id,),
     )
     count = row["cnt"] if row else 0
@@ -169,9 +171,9 @@ def check_daily_cap(device_id: str) -> CheckResult:
     if count >= cap:
         # Wait until midnight + jitter
         return CheckResult("daily_cap", False,
-                           f"{count}/{cap} sessions today — cap reached",
+                           f"{count}/{cap} successful sessions today — cap reached",
                            wait_seconds=3600)
-    return CheckResult("daily_cap", True, f"{count}/{cap} sessions today")
+    return CheckResult("daily_cap", True, f"{count}/{cap} successful sessions today")
 
 
 def check_cooldown(device_id: str) -> CheckResult:
