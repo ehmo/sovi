@@ -142,8 +142,9 @@ def check_proxy_assigned(device_id: str) -> CheckResult:
     """Verify device has a healthy proxy assigned."""
     row = sync_execute_one(
         """SELECT p.id, p.is_healthy, p.host, p.port
-           FROM proxies p
-           WHERE p.assigned_device_id = %s""",
+           FROM devices d
+           JOIN proxies p ON p.id = d.proxy_id
+           WHERE d.id = %s""",
         (device_id,),
     )
     if not row:
