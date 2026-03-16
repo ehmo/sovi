@@ -771,7 +771,7 @@ class DeviceScheduler:
         try:
             sync_execute(
                 """UPDATE device_account_bindings
-                   SET unbound_at = now(), unbind_reason = 'distribution_handoff'
+                   SET unbound_at = now(), notes = 'distribution_handoff'
                    WHERE account_id = %s AND device_id = %s AND unbound_at IS NULL""",
                 (account_id, device_id),
             )
