@@ -560,6 +560,18 @@ class DeviceScheduler:
             )
             result = run_warming(session, config)
 
+            # Check for error from run_warming
+            if isinstance(result, dict) and "error" in result:
+                logger.warning(
+                    "run_warming returned error for %s/%s: %s",
+                    platform, username, result["error"],
+                )
+                events.emit("scheduler", "error", "warming_error",
+                            f"Warming error for {platform}/{username}: {result['error']}",
+                            device_id=device_id, account_id=account_id,
+                            context={"platform": platform, "error": result["error"]})
+                return False
+
             # Step 5: Update account state
             new_day_count = account["warming_day_count"] + 1
             # Phase transitions based on warming days
