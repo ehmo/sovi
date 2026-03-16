@@ -22,6 +22,7 @@ Concurrency contract:
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 from collections.abc import AsyncIterator
 from typing import Any
@@ -33,6 +34,15 @@ import psycopg_pool
 from sovi.config import settings
 
 _pool: psycopg_pool.AsyncConnectionPool | None = None
+_pool_lock: asyncio.Lock | None = None
+
+
+def _get_pool_lock() -> asyncio.Lock:
+    """Lazily create the pool lock (must be created inside a running event loop)."""
+    global _pool_lock
+    if _pool_lock is None:
+        _pool_lock = asyncio.Lock()
+    return _pool_lock
 
 
 async def init_pool(min_size: int = 2, max_size: int = 10) -> psycopg_pool.AsyncConnectionPool:
@@ -40,15 +50,19 @@ async def init_pool(min_size: int = 2, max_size: int = 10) -> psycopg_pool.Async
     global _pool
     if _pool is not None:
         return _pool
-    _pool = psycopg_pool.AsyncConnectionPool(
-        conninfo=settings.database_url,
-        min_size=min_size,
-        max_size=max_size,
-        kwargs={"row_factory": psycopg.rows.dict_row},
-        open=False,
-    )
-    await _pool.open()
-    return _pool
+    async with _get_pool_lock():
+        # Double-check after acquiring the lock
+        if _pool is not None:
+            return _pool
+        _pool = psycopg_pool.AsyncConnectionPool(
+            conninfo=settings.database_url,
+            min_size=min_size,
+            max_size=max_size,
+            kwargs={"row_factory": psycopg.rows.dict_row},
+            open=False,
+        )
+        await _pool.open()
+        return _pool
 
 
 async def close_pool() -> None:
