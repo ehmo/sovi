@@ -4,12 +4,13 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Query, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
 from sovi.dashboard.app import templates
 from sovi.db import execute, execute_one
+from sovi.models import AccountState
 
 router = APIRouter(tags=["accounts"])
 
@@ -98,6 +99,13 @@ async def update_account(account_id: str, body: AccountUpdate):
     params: list[Any] = []
 
     if body.current_state is not None:
+        try:
+            AccountState(body.current_state)
+        except ValueError:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid state: {body.current_state}. Valid: {[s.value for s in AccountState]}",
+            )
         sets.append("current_state = %s")
         params.append(body.current_state)
     if body.username is not None:
