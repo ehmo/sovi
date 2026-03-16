@@ -59,11 +59,11 @@ def _build_base_prompt(persona: dict) -> str:
     return ", ".join(parts)
 
 
-def _fal_generate(prompt: str, image_url: str | None = None) -> bytes | None:
+def _fal_generate(prompt: str, image_url: str | None = None) -> tuple[bytes, str] | None:
     """Call fal.ai Flux to generate an image.
 
     If image_url is provided, uses it as a face reference for consistency.
-    Returns PNG bytes or None on failure.
+    Returns (PNG bytes, image URL) or None on failure.
     """
     if not settings.fal_key:
         logger.error("FAL_KEY not configured")
@@ -137,7 +137,7 @@ def _fal_generate(prompt: str, image_url: str | None = None) -> bytes | None:
         # Download the image
         img_resp = httpx.get(image_url_result, timeout=30.0)
         img_resp.raise_for_status()
-        return img_resp.content
+        return img_resp.content, image_url_result
 
     except Exception:
         logger.error("fal.ai image generation failed", exc_info=True)
@@ -169,10 +169,15 @@ def generate_persona_photos(persona: dict, count: int = 10) -> list[str]:
         logger.info("Generating photo %d/%d for %s: %s", i + 1, count, persona.get("display_name"), spec["type"])
 
         # First image: text-to-image. Subsequent: use reference for consistency.
-        image_bytes = _fal_generate(full_prompt, image_url=reference_url)
-        if not image_bytes:
+        result = _fal_generate(full_prompt, image_url=reference_url)
+        if not result:
             logger.warning("Failed to generate photo %d for %s", i + 1, persona.get("display_name"))
             continue
+        image_bytes, generated_url = result
+
+        # Use the first successful image as face reference for subsequent photos
+        if reference_url is None:
+            reference_url = generated_url
 
         # Save to disk
         filename = f"{spec['type']}_{i:02d}.png"
@@ -189,8 +194,5 @@ def generate_persona_photos(persona: dict, count: int = 10) -> list[str]:
 
         paths.append(str(filepath))
 
-        # After first image, we could upload it and use as reference
-        # For now, we use consistent prompts for coherence
-        # TODO: implement face reference via PuLID when fal.ai supports it natively
 
     return paths
