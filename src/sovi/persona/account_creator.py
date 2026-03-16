@@ -197,8 +197,8 @@ def _store_account(
            RETURNING id, platform, username, current_state""",
         (
             platform, username,
-            encrypt(email).encode(), encrypt(password).encode(),
-            encrypt(totp_secret).encode(),
+            encrypt(email), encrypt(password),
+            encrypt(totp_secret),
             niche_id, device_id,
         ),
     )

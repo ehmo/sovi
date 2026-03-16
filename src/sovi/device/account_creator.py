@@ -308,9 +308,9 @@ def create_account(
         (
             platform,
             username,
-            encrypt(email).encode(),
-            encrypt(password).encode(),
-            encrypt(totp_secret).encode(),
+            encrypt(email),
+            encrypt(password),
+            encrypt(totp_secret),
             str(niche_id),
             device_id,
         ),
