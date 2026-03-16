@@ -423,6 +423,27 @@ class WDASession:
                 logger.warning("WiFi button not found by accessibility id, used coordinate tap on %s", self.device.name)
                 time.sleep(1.0)
 
+                # Re-check WiFi status after fallback tap
+                wifi_el_recheck = self.find_element("accessibility id", "wifi-button")
+                if wifi_el_recheck:
+                    el_id_recheck = wifi_el_recheck["ELEMENT"]
+                    try:
+                        resp = self.client.get(f"{self._s}/element/{el_id_recheck}/attribute/value", timeout=5)
+                        value_recheck = resp.json().get("value", "")
+                    except Exception:
+                        value_recheck = ""
+
+                    if "," in str(value_recheck) or "connected" in str(value_recheck).lower():
+                        logger.warning("WiFi still ON after fallback tap on %s — could not verify off", self.device.name)
+                        self.swipe(int(w * 0.5), int(h * 0.9), int(w * 0.5), int(h * 0.5), duration=0.3)
+                        time.sleep(0.5)
+                        return False
+                else:
+                    logger.warning("Cannot verify WiFi state after fallback tap on %s", self.device.name)
+                    self.swipe(int(w * 0.5), int(h * 0.9), int(w * 0.5), int(h * 0.5), duration=0.3)
+                    time.sleep(0.5)
+                    return False
+
             # Close Control Center
             self.swipe(int(w * 0.5), int(h * 0.9), int(w * 0.5), int(h * 0.5), duration=0.3)
             time.sleep(0.5)
