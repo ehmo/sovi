@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
 from sovi import db
@@ -41,7 +41,7 @@ async def get_account_for_posting(platform: Platform, niche_slug: str) -> dict |
     """Select the best account for posting, respecting cooldowns and limits."""
     accounts = await get_available_accounts(platform, niche_slug)
 
-    cutoff = datetime.utcnow() - timedelta(hours=12)
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=12)
     for account in accounts:
         # Skip if posted too recently (12h minimum gap for most platforms)
         if account.get("last_post_at") and account["last_post_at"] > cutoff:

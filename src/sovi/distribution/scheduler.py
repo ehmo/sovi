@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
 from sovi.models import DistributionRequest, Platform
@@ -36,7 +36,7 @@ def schedule_distribution(
 ) -> list[DistributionRequest]:
     """Generate staggered distribution requests across platforms."""
     if base_time is None:
-        base_time = datetime.utcnow()
+        base_time = datetime.now(timezone.utc)
 
     requests = []
     for platform, account_id in account_ids.items():
@@ -53,7 +53,7 @@ def schedule_distribution(
         ) + timedelta(days=schedule["day_offset"])
 
         # If scheduled time is in the past, push to next day
-        if scheduled <= datetime.utcnow():
+        if scheduled <= datetime.now(timezone.utc):
             scheduled += timedelta(days=1)
 
         requests.append(DistributionRequest(
