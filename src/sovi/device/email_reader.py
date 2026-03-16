@@ -16,6 +16,7 @@ from __future__ import annotations
 import logging
 import re
 import time
+from datetime import datetime
 
 from sovi import events
 from sovi.crypto import decrypt
@@ -381,7 +382,10 @@ def _extract_code_from_page(wda: WDASession) -> str | None:
         if match:
             code = match.group(1)
             # Filter out unlikely codes (years, common numbers)
-            if code in ("2024", "2025", "2026", "0000", "1234"):
+            current_year = datetime.now().year
+            excluded = {str(y) for y in range(current_year - 2, current_year + 3)}
+            excluded |= {"0000", "1234"}
+            if code in excluded:
                 continue
             logger.info("Found verification code: %s", code)
             return code
