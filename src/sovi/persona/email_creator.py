@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import random
 import time
+from datetime import datetime
 from typing import Any
 
 from sovi import events
@@ -50,7 +51,7 @@ def _derive_email_username(persona: dict, provider: str) -> str:
     first = persona["first_name"].lower().replace(" ", "")
     last = persona["last_name"].lower().replace(" ", "")
     age = persona.get("age", 28)
-    birth_year = str(2026 - age)[-2:]
+    birth_year = str(datetime.now().year - age)[-2:]
 
     variants = [
         f"{first}.{last}",
