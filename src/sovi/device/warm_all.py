@@ -66,7 +66,7 @@ def _log_warming_to_db(result: dict) -> None:
             with conn.cursor() as cur:
                 # Look up device ID
                 cur.execute(
-                    "SELECT id FROM devices WHERE name = %s",
+                    "SELECT id FROM devices WHERE label = %s",
                     (result.get("device"),),
                 )
                 device_row = cur.fetchone()
