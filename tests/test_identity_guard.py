@@ -129,11 +129,11 @@ class TestCheckNoConcurrentSession:
 
 
 class TestCheckProxyAssigned:
-    def test_no_proxy(self, mock_ig_db):
+    def test_no_proxy_cellular_fallback(self, mock_ig_db):
         mock_ig_db.execute_one.return_value = None
         result = check_proxy_assigned(DEVICE_ID)
-        assert result.passed is False
-        assert "No proxy" in result.detail
+        assert result.passed is True
+        assert "cellular" in result.detail
 
     def test_unhealthy_proxy(self, mock_ig_db):
         mock_ig_db.execute_one.return_value = {
@@ -296,8 +296,8 @@ class TestRunPreSessionChecks:
     def test_failed_check_sets_passed_false(self, mock_ig_db):
         mock_ig_db.execute_one.side_effect = [
             None,
-            None,  # proxy: no proxy -> fails
-            {"cnt": 0},
+            None,  # proxy: no proxy -> cellular fallback (passes)
+            {"cnt": 25},  # daily_cap: over limit -> fails
             {"last_session_ended_at": None},
         ]
         with patch("sovi.device.identity_guard.settings") as mock_settings:

@@ -147,7 +147,7 @@ def check_proxy_assigned(device_id: str) -> CheckResult:
         (device_id,),
     )
     if not row:
-        return CheckResult("proxy_assigned", False, "No proxy assigned to device")
+        return CheckResult("proxy_assigned", True, "No proxy — using cellular connection")
     if not row["is_healthy"]:
         return CheckResult("proxy_assigned", False,
                            f"Proxy {row['host']}:{row['port']} marked unhealthy")
