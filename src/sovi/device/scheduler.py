@@ -308,7 +308,13 @@ class DeviceScheduler:
         if task["type"] == "warm":
             outcome = "success" if self._execute_warming(device, dt, task) else "failed"
         elif task["type"] == "create":
-            outcome = "success" if self._execute_creation(device, dt, task) else "failed"
+            skipped = self._execute_creation(device, dt, task)
+            if skipped is None:
+                # Stub/no-op — don't count toward daily cap
+                if session_id:
+                    end_session(session_id, "skipped")
+                return
+            outcome = "success" if skipped else "failed"
 
         # End session log
         if session_id:
@@ -746,8 +752,8 @@ class DeviceScheduler:
         device: WDADevice,
         dt: DeviceThread,
         task: dict[str, Any],
-    ) -> bool:
-        """Execute an account creation task. Returns True on success."""
+    ) -> bool | None:
+        """Execute an account creation task. Returns True on success, False on failure, None if skipped."""
         platform = task["platform"]
         device_id = dt.device_id
         dt.current_task = f"creating:{platform}"
@@ -766,7 +772,7 @@ class DeviceScheduler:
                     f"Account creation for {platform}: use persona pipeline instead",
                     device_id=device_id,
                     context={"platform": platform, "reason": "email_provider_not_configured"})
-        return False  # no-op until email provider is integrated
+        return None  # no-op until email provider is integrated
 
     @staticmethod
     def _handoff_to_distribution(
