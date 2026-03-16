@@ -458,7 +458,7 @@ class DeviceScheduler:
                            GROUP BY platform""",
                         (WARMABLE_PLATFORMS,),
                     )
-                    counts = {row[0]: row[1] for row in cur.fetchall()}
+                    counts = {row["platform"]: row["cnt"] for row in cur.fetchall()}
                     conn.commit()
 
             tt_count = counts.get("tiktok", 0)
