@@ -515,14 +515,9 @@ class DeviceScheduler:
             dt.current_task = f"enforcing_wifi_off:{device.name}"
             session.ensure_wifi_off()
 
-            # Step 0b: Rotate IP via airplane mode toggle
-            dt.current_task = f"rotating_ip:{device.name}"
-            if not session.toggle_airplane_mode():
-                logger.warning("Airplane mode toggle failed on %s, continuing anyway", device.name)
-                events.emit("device", "warning", "ip_rotation_failed",
-                           f"Airplane mode toggle failed on {device.name}",
-                           device_id=device_id,
-                           context={"device_name": device.name})
+            # NOTE: airplane mode toggle removed from warming path — too risky,
+            # a failed toggle bricks the phone in airplane mode until manual reset.
+            # IP rotation only needed for account creation (seeder path).
 
             # Step 1: Delete app for IDFV isolation
             dt.current_task = f"deleting:{platform}"

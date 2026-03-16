@@ -487,11 +487,25 @@ class WDASession:
             time.sleep(3.0)
 
             # Tap again to disable airplane mode (cellular reconnects)
-            airplane_el = self.find_element("accessibility id", "airplane-mode-button")
-            if airplane_el:
-                self.element_click(airplane_el["ELEMENT"])
-            else:
-                self.tap(int(w * 0.18), int(h * 0.18))
+            # Retry up to 3 times to ensure airplane mode is OFF
+            for attempt in range(3):
+                airplane_el = self.find_element("accessibility id", "airplane-mode-button")
+                if airplane_el:
+                    el_id = airplane_el["ELEMENT"]
+                    # Check if still enabled (value contains "1" or "On")
+                    attrs = self.wda.get(
+                        f"/session/{self.session_id}/element/{el_id}/attribute/value"
+                    ).json().get("value", "")
+                    if attrs and ("1" in str(attrs) or "On" in str(attrs)):
+                        self.element_click(el_id)
+                        time.sleep(2.0)
+                        continue  # re-check
+                    else:
+                        break  # airplane mode is off
+                else:
+                    self.tap(int(w * 0.18), int(h * 0.18))
+                    time.sleep(2.0)
+                    break
 
             # Close Control Center — swipe up from bottom or tap empty area
             time.sleep(0.5)
@@ -506,8 +520,16 @@ class WDASession:
 
         except Exception:
             logger.error("Failed to toggle airplane mode on %s", self.device.name, exc_info=True)
-            # Try to close Control Center and go home as recovery
+            # CRITICAL: try to ensure airplane mode is OFF before giving up
             try:
+                airplane_el = self.find_element("accessibility id", "airplane-mode-button")
+                if airplane_el:
+                    attrs = self.wda.get(
+                        f"/session/{self.session_id}/element/{airplane_el['ELEMENT']}/attribute/value"
+                    ).json().get("value", "")
+                    if attrs and ("1" in str(attrs) or "On" in str(attrs)):
+                        self.element_click(airplane_el["ELEMENT"])
+                        logger.info("Emergency airplane mode OFF on %s", self.device.name)
                 self.press_button("home")
             except Exception:
                 pass
