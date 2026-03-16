@@ -65,7 +65,7 @@ class TestDeviceAPI:
         assert "not found" in resp.json()["detail"].lower()
 
     async def test_register_device(self, client):
-        result_row = {"id": "d1", "label": "new-phone", "status": "available"}
+        result_row = {"id": "d1", "name": "new-phone", "status": "active"}
         with patch("sovi.dashboard.routes.devices.async_register_device", new_callable=AsyncMock, return_value=result_row):
             resp = await client.post("/api/devices", json={
                 "name": "new-phone",
@@ -75,7 +75,7 @@ class TestDeviceAPI:
                 "wda_port": 8100,
             })
         assert resp.status_code == 200
-        assert resp.json()["label"] == "new-phone"
+        assert resp.json()["name"] == "new-phone"
 
     async def test_register_device_failure(self, client):
         with patch("sovi.dashboard.routes.devices.async_register_device", new_callable=AsyncMock, return_value=None):

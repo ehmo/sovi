@@ -27,14 +27,14 @@ _SYNC_EXEC_ONE = "sovi.device.device_registry.sync_execute_one"
 
 
 class TestToWdaDevice:
-    def test_aliased_row(self):
-        """Column aliasing: label→name, appium_port→wda_port (from get_active_devices)."""
+    def test_normal_row(self):
+        """DB rows use name and wda_port columns directly."""
         row = {
             "id": "dev-1",
             "name": "phone-1",
             "udid": "abc123def456",
             "wda_port": 8100,
-            "status": "available",
+            "status": "active",
         }
         device = to_wda_device(row)
         assert isinstance(device, WDADevice)
@@ -42,20 +42,20 @@ class TestToWdaDevice:
         assert device.udid == "abc123def456"
         assert device.wda_port == 8100
 
-    def test_raw_row(self):
-        """Raw DB rows use label and appium_port columns."""
+    def test_row_with_port(self):
+        """DB rows with wda_port."""
         row = {
             "id": "dev-2",
-            "label": "phone-2",
+            "name": "phone-2",
             "udid": "xyz789",
-            "appium_port": 8200,
+            "wda_port": 8200,
         }
         device = to_wda_device(row)
         assert device.name == "phone-2"
         assert device.wda_port == 8200
 
     def test_fallback_to_udid_truncated(self):
-        """When neither name nor label is present, uses udid[:12]."""
+        """When name is not present, uses udid[:12]."""
         row = {
             "udid": "abcdef123456789",
         }
@@ -63,7 +63,7 @@ class TestToWdaDevice:
         assert device.name == "abcdef123456"
 
     def test_default_wda_port(self):
-        """When neither wda_port nor appium_port is set, defaults to 8100."""
+        """When wda_port is not set, defaults to 8100."""
         row = {
             "udid": "abc123",
         }
@@ -80,27 +80,25 @@ class TestToWdaDevice:
         device = to_wda_device(row)
         assert device.base_url == "http://localhost:8300"
 
-    def test_name_preferred_over_label(self):
-        """When both name and label exist, name takes precedence."""
+    def test_name_used(self):
+        """Name column is used directly."""
         row = {
-            "name": "aliased-name",
-            "label": "raw-label",
+            "name": "my-phone",
             "udid": "abc",
             "wda_port": 8100,
         }
         device = to_wda_device(row)
-        assert device.name == "aliased-name"
+        assert device.name == "my-phone"
 
-    def test_label_used_when_name_is_none(self):
-        """When name is None, falls back to label."""
+    def test_name_none_falls_back_to_udid(self):
+        """When name is None, falls back to udid[:12]."""
         row = {
             "name": None,
-            "label": "raw-label",
-            "udid": "abc",
+            "udid": "abcdef123456789",
             "wda_port": 8100,
         }
         device = to_wda_device(row)
-        assert device.name == "raw-label"
+        assert device.name == "abcdef123456"
 
 
 # --- get_active_devices ---
@@ -109,8 +107,8 @@ class TestToWdaDevice:
 class TestGetActiveDevices:
     def test_returns_list_of_dicts(self):
         devices = [
-            {"id": "d1", "name": "phone-1", "udid": "u1", "wda_port": 8100, "status": "available"},
-            {"id": "d2", "name": "phone-2", "udid": "u2", "wda_port": 8200, "status": "in_use"},
+            {"id": "d1", "name": "phone-1", "udid": "u1", "wda_port": 8100, "status": "active"},
+            {"id": "d2", "name": "phone-2", "udid": "u2", "wda_port": 8200, "status": "active"},
         ]
         with patch(_SYNC_EXEC, return_value=devices):
             result = get_active_devices()
@@ -122,14 +120,15 @@ class TestGetActiveDevices:
             result = get_active_devices()
         assert result == []
 
-    def test_query_uses_column_aliases(self):
-        """Verify the SQL query aliases label→name and appium_port→wda_port."""
+    def test_query_uses_correct_columns(self):
+        """Verify the SQL query uses deployed column names directly."""
         with patch(_SYNC_EXEC, return_value=[]) as mock_exec:
             get_active_devices()
         query = mock_exec.call_args[0][0]
-        assert "label AS name" in query
-        assert "appium_port AS wda_port" in query
-        assert "last_heartbeat AS connected_since" in query
+        assert "name" in query
+        assert "wda_port" in query
+        assert "connected_since" in query
+        assert "status = 'active'" in query
 
 
 # --- get_device_by_id / get_device_by_name ---
@@ -137,7 +136,7 @@ class TestGetActiveDevices:
 
 class TestDeviceLookups:
     def test_get_device_by_id(self):
-        device = {"id": "d1", "label": "phone-1", "udid": "u1"}
+        device = {"id": "d1", "name": "phone-1", "udid": "u1"}
         with patch(_SYNC_EXEC_ONE, return_value=device):
             result = get_device_by_id("d1")
         assert result["id"] == "d1"
@@ -148,10 +147,10 @@ class TestDeviceLookups:
         assert result is None
 
     def test_get_device_by_name(self):
-        device = {"id": "d1", "label": "phone-1"}
+        device = {"id": "d1", "name": "phone-1"}
         with patch(_SYNC_EXEC_ONE, return_value=device):
             result = get_device_by_name("phone-1")
-        assert result["label"] == "phone-1"
+        assert result["name"] == "phone-1"
 
 
 # --- register_device ---
@@ -159,11 +158,11 @@ class TestDeviceLookups:
 
 class TestRegisterDevice:
     def test_register_returns_device_row(self):
-        row = {"id": "d1", "label": "new-phone", "udid": "u1", "status": "available"}
+        row = {"id": "d1", "name": "new-phone", "udid": "u1", "status": "active"}
         with patch(_SYNC_EXEC, return_value=[row]):
             result = register_device("new-phone", "u1", model="iPhone 16", wda_port=8100)
         assert result is not None
-        assert result["label"] == "new-phone"
+        assert result["name"] == "new-phone"
 
     def test_register_returns_none_on_empty_result(self):
         with patch(_SYNC_EXEC, return_value=[]):
@@ -188,8 +187,8 @@ class TestDeviceStatusUpdates:
             update_heartbeat("dev-1")
         mock_exec.assert_called_once()
         query = mock_exec.call_args[0][0]
-        assert "last_heartbeat" in query
-        assert "in_use" in query
+        assert "connected_since" in query
+        assert "'active'" in query
 
     def test_set_device_status(self):
         with patch(_SYNC_EXEC) as mock_exec:
