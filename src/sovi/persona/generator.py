@@ -7,6 +7,7 @@ pillars for context.
 
 from __future__ import annotations
 
+import calendar
 import json
 import logging
 import random
@@ -170,7 +171,9 @@ def generate_personas(niche_id: str, niche_slug: str, count: int = 10) -> list[d
             # Generate a plausible DOB
             today = date.today()
             birth_year = today.year - age
-            dob = date(birth_year, random.randint(1, 12), random.randint(1, 28))
+            month = random.randint(1, 12)
+            max_day = calendar.monthrange(birth_year, month)[1]
+            dob = date(birth_year, month, random.randint(1, max_day))
 
             # Generate username base
             first = p["first_name"].lower().replace(" ", "")
