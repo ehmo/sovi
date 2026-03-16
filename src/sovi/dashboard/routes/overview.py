@@ -46,7 +46,7 @@ async def _fleet_stats() -> dict:
         ),
         execute("SELECT status, COUNT(*) as cnt FROM devices GROUP BY status"),
         execute_one("SELECT COUNT(*) as total FROM accounts WHERE deleted_at IS NULL"),
-        execute_one("SELECT COUNT(*) as active FROM devices WHERE status IN ('available', 'in_use')"),
+        execute_one("SELECT COUNT(*) as active FROM devices WHERE status = 'active'"),
         execute(
             """SELECT id, timestamp, category, severity, event_type, message
                FROM system_events
