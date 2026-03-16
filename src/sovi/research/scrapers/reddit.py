@@ -7,6 +7,7 @@ Stores results in the trending_topics table.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import random
 import time
@@ -139,7 +140,7 @@ async def scrape_all_stories(
             all_stories.extend(stories)
             logger.info("  r/%s: %d stories", sub, len(stories))
             # Polite delay to avoid 429s
-            time.sleep(random.uniform(1.0, 2.5))
+            await asyncio.sleep(random.uniform(1.0, 2.5))
         except Exception:
             logger.warning("Failed to scrape r/%s", sub, exc_info=True)
             continue
