@@ -16,6 +16,7 @@ for r in rows:
         em = "(decrypt fail)"
     try:
         pw = decrypt(r["password"])
+        pw_display = pw[:3] + "***" if len(pw) > 3 else "***"
     except Exception:
-        pw = "?"
-    print(f"{r['status']:10s} {r['provider']:8s} {em:45s} {pw:20s} {r['domain']}")
+        pw_display = "(decrypt fail)"
+    print(f"{r['status']:10s} {r['provider']:8s} {em:45s} {pw_display:20s} {r['domain']}")
