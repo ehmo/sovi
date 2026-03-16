@@ -112,11 +112,15 @@ def read_verification_code(
                         device_id=device_id,
                         context={"provider": provider, "platform": platform, "code": code})
             # Update verification status
-            sync_execute(
-                """UPDATE email_accounts SET verification_status = 'verified',
-                   last_checked_at = now() WHERE id = %s""",
-                (str(email_account["id"]),),
-            )
+            account_id = email_account.get("id")
+            if account_id is not None:
+                sync_execute(
+                    """UPDATE email_accounts SET verification_status = 'verified',
+                       last_checked_at = now() WHERE id = %s""",
+                    (str(account_id),),
+                )
+            else:
+                logger.warning("email_account missing 'id' — skipping DB update")
         else:
             events.emit("persona", "warning", "email_verification_failed",
                         f"No {platform} verification code found in {provider}",
