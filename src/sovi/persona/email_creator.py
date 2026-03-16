@@ -8,11 +8,11 @@ from __future__ import annotations
 
 import logging
 import random
-import string
 import time
 from typing import Any
 
 from sovi import events
+from sovi.auth import generate_password
 from sovi.auth.captcha_solver import solve_funcaptcha, solve_image
 from sovi.auth.sms_verifier import cancel_verification, request_number, wait_for_code
 from sovi.crypto import encrypt
@@ -43,21 +43,6 @@ PROVIDERS = {
         ],
     },
 }
-
-
-def _generate_password() -> str:
-    """Generate a strong random password."""
-    chars = string.ascii_letters + string.digits + "!@#$%"
-    # Ensure at least one of each type
-    pw = [
-        random.choice(string.ascii_uppercase),
-        random.choice(string.ascii_lowercase),
-        random.choice(string.digits),
-        random.choice("!@#$%"),
-    ]
-    pw.extend(random.choices(chars, k=12))
-    random.shuffle(pw)
-    return "".join(pw)
 
 
 def _derive_email_username(persona: dict, provider: str) -> str:
@@ -150,7 +135,7 @@ def create_email_for_persona(
     username = _derive_email_username(persona, provider)
     domain = random.choice(config["domains"])
     email_address = f"{username}@{domain}"
-    password = _generate_password()
+    password = generate_password()
 
     events.emit("persona", "info", "email_creation_started",
                 f"Creating {provider} email for {persona.get('display_name', '?')}: {email_address}",
@@ -247,7 +232,7 @@ def _signup_outlook(
             time.sleep(1)
 
         # Click Next
-        _click_button(wda, ["Next", "next"])
+        click_any(wda, ["Next", "next"])
         time.sleep(3)
 
         # Enter password
@@ -261,7 +246,7 @@ def _signup_outlook(
             wda.element_value(pw_field["ELEMENT"], password)
             time.sleep(1)
 
-        _click_button(wda, ["Next", "next"])
+        click_any(wda, ["Next", "next"])
         time.sleep(3)
 
         # Enter name
@@ -281,7 +266,7 @@ def _signup_outlook(
             wda.element_value(last_field["ELEMENT"], persona["last_name"])
             auto.human_delay()
 
-        _click_button(wda, ["Next", "next"])
+        click_any(wda, ["Next", "next"])
         time.sleep(3)
 
         # Date of birth
@@ -293,7 +278,7 @@ def _signup_outlook(
                 _set_dob_fields(wda, month=int(parts[1]), day=int(parts[2]), year=int(parts[0]))
                 time.sleep(1)
 
-        _click_button(wda, ["Next", "next"])
+        click_any(wda, ["Next", "next"])
         time.sleep(3)
 
         # Handle CAPTCHA
@@ -317,7 +302,7 @@ def _signup_outlook(
             sms = request_number("outlook")
             if sms:
                 wda.element_value(phone_el["ELEMENT"], sms.phone_number)
-                _click_button(wda, ["Send code", "Send Code", "Next"])
+                click_any(wda, ["Send code", "Send Code", "Next"])
                 time.sleep(5)
 
                 code = wait_for_code(sms, timeout=90)
@@ -328,7 +313,7 @@ def _signup_outlook(
                     )
                     if code_field:
                         wda.element_value(code_field["ELEMENT"], code)
-                        _click_button(wda, ["Next", "Verify"])
+                        click_any(wda, ["Next", "Verify"])
                         time.sleep(3)
                 else:
                     cancel_verification(sms)
@@ -354,7 +339,7 @@ def _signup_mailcom(
     """Mail.com signup flow via Safari."""
     try:
         # Click "Sign up" / free email
-        _click_button(wda, ["Sign up", "Free email", "Create account", "Get started"])
+        click_any(wda, ["Sign up", "Free email", "Create account", "Get started"])
         time.sleep(3)
 
         # Enter desired email address
@@ -380,7 +365,7 @@ def _signup_mailcom(
             wda.element_click(domain_el["ELEMENT"])
             time.sleep(1)
 
-        _click_button(wda, ["Next", "Continue", "Check availability"])
+        click_any(wda, ["Next", "Continue", "Check availability"])
         time.sleep(3)
 
         # Enter name
@@ -428,7 +413,7 @@ def _signup_mailcom(
             wda.element_click(gender_el["ELEMENT"])
             time.sleep(0.5)
 
-        _click_button(wda, ["Create account", "Register", "Sign up", "Continue"])
+        click_any(wda, ["Create account", "Register", "Sign up", "Continue"])
         time.sleep(5)
 
         # Handle CAPTCHA
@@ -446,8 +431,8 @@ def _signup_mailcom(
         return False
 
 
-def _click_button(wda: WDASession, labels: list[str]) -> bool:
-    """Try to click a button with one of the given labels."""
+def click_any(wda: WDASession, labels: list[str]) -> bool:
+    """Try to click an element matching any of the given labels."""
     for label in labels:
         el = wda.find_element("accessibility id", label)
         if el:

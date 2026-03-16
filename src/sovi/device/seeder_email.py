@@ -13,7 +13,6 @@ from __future__ import annotations
 import logging
 import math
 import random
-import string
 import time
 import uuid
 from io import BytesIO
@@ -23,6 +22,7 @@ import numpy as np
 from PIL import Image
 
 from sovi import events
+from sovi.auth import generate_password
 from sovi.crypto import encrypt
 from sovi.db import sync_execute, sync_execute_one
 from sovi.device.wda_client import WDASession
@@ -281,20 +281,6 @@ def _generate_username(persona: dict) -> str:
     return f"{base}{suffix}"
 
 
-def _generate_password() -> str:
-    """Generate a strong random password (16 chars)."""
-    chars = string.ascii_letters + string.digits + "!@#$%"
-    pw = [
-        random.choice(string.ascii_uppercase),
-        random.choice(string.ascii_lowercase),
-        random.choice(string.digits),
-        random.choice("!@#$%"),
-    ]
-    pw.extend(random.choices(chars, k=12))
-    random.shuffle(pw)
-    return "".join(pw)
-
-
 def create_protonmail_email(
     wda: WDASession,
     persona: dict,
@@ -314,7 +300,7 @@ def create_protonmail_email(
     Returns email_account dict or None on failure.
     """
     username = _generate_username(persona)
-    password = _generate_password()
+    password = generate_password()
     email = f"{username}@proton.me"
     persona_id = str(persona.get("id") or persona.get("persona_id", ""))
 
