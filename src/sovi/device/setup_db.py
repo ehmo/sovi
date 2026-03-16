@@ -58,7 +58,7 @@ def populate_devices() -> None:
     with psycopg.connect(settings.database_url) as conn:
         with conn.cursor() as cur:
             cur.execute(
-                """UPDATE devices SET status = 'active', connected_since = now(), updated_at = now()
+                """UPDATE devices SET status = 'active', last_heartbeat = now(), updated_at = now()
                    WHERE udid IN ('00008140-001975DC3678801C', '00008140-001A00141163001C')""",
             )
             conn.commit()
