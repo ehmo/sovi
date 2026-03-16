@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import sys
 import threading
 import time
 from datetime import datetime
@@ -21,8 +22,8 @@ import httpx
 import psycopg
 
 from sovi.device.device_registry import get_active_devices, to_wda_device
-from sovi.device.wda_client import WDADevice, WDASession
 from sovi.device.warming import WarmingConfig, WarmingPhase, run_warming
+from sovi.device.wda_client import WDADevice, WDASession
 
 logging.basicConfig(
     level=logging.INFO,
@@ -30,6 +31,12 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 logger = logging.getLogger(__name__)
+
+LEGACY_WARM_WARNING = (
+    "Legacy warm commands bypass delete/install/login and are unsafe for account warm-up. "
+    "Use `sovi scheduler start` for real account warming, or pass "
+    "`--allow-existing-session` only for manual testing on an already logged-in app."
+)
 
 # Database URL — imported from settings or use default
 try:
@@ -181,7 +188,16 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="SOVI Multi-Device Warming")
     parser.add_argument("--duration", type=int, default=30, help="Duration per platform in minutes")
     parser.add_argument("--phase", choices=list(PHASE_MAP), default="passive")
+    parser.add_argument(
+        "--allow-existing-session",
+        action="store_true",
+        help="Acknowledge this command only warms already logged-in sessions.",
+    )
     args = parser.parse_args()
+
+    if not args.allow_existing_session:
+        logger.error(LEGACY_WARM_WARNING)
+        sys.exit(2)
 
     phase = PHASE_MAP[args.phase]
     threads: list[threading.Thread] = []

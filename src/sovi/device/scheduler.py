@@ -28,10 +28,14 @@ import httpx
 from sovi import events
 from sovi.config import settings
 from sovi.db import sync_conn, sync_execute, sync_execute_one
-from sovi.models import AccountState
 from sovi.device._clean_room import enforce as enforce_clean_room
 from sovi.device.app_lifecycle import delete_app, install_from_app_store, login_account, reset_idfa
-from sovi.device.device_registry import get_active_devices, set_device_status, to_wda_device, update_heartbeat
+from sovi.device.device_registry import (
+    get_active_devices,
+    set_device_status,
+    to_wda_device,
+    update_heartbeat,
+)
 from sovi.device.identity_guard import (
     end_session,
     run_pre_session_checks,
@@ -48,6 +52,7 @@ from sovi.device.roles import (
 from sovi.device.seeder import run_seeder_cycle
 from sovi.device.warming import WarmingConfig, WarmingPhase, run_warming
 from sovi.device.wda_client import WDADevice, WDASession
+from sovi.models import AccountState
 
 logger = logging.getLogger(__name__)
 
@@ -513,7 +518,12 @@ class DeviceScheduler:
 
             # Step 0a: Ensure WiFi is OFF before any network activity
             dt.current_task = f"enforcing_wifi_off:{device.name}"
-            session.ensure_wifi_off()
+            if not session.ensure_wifi_off():
+                events.emit("scheduler", "error", "wifi_enforcement_failed",
+                           f"Could not verify WiFi is off on {device.name}",
+                           device_id=device_id, account_id=account_id,
+                           context={"platform": platform, "device_name": device.name})
+                return False
 
             # NOTE: airplane mode toggle removed from warming path — too risky,
             # a failed toggle bricks the phone in airplane mode until manual reset.
@@ -521,13 +531,21 @@ class DeviceScheduler:
 
             # Step 1: Delete app for IDFV isolation
             dt.current_task = f"deleting:{platform}"
-            delete_app(session, platform, device_id=device_id)
+            if not delete_app(session, platform, device_id=device_id):
+                events.emit("scheduler", "error", "app_delete_failed",
+                           f"Failed to delete {platform} before warming",
+                           device_id=device_id, account_id=account_id,
+                           context={"platform": platform, "step": "delete"})
+                return False
             time.sleep(2)
 
             # Step 1.5: Reset IDFA between sessions
             dt.current_task = f"resetting_idfa:{device.name}"
-            reset_idfa(session, device_id=device_id)
-            time.sleep(2)
+            if not reset_idfa(session, device_id=device_id):
+                logger.warning("IDFA reset failed for %s on %s; continuing with fresh install only",
+                               platform, device.name)
+            else:
+                time.sleep(2)
 
             # Step 2: Install fresh
             dt.current_task = f"installing:{platform}"

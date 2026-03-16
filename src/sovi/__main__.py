@@ -94,6 +94,8 @@ def cmd_warm(args: argparse.Namespace) -> None:
         argv.extend(["--duration", str(args.duration)])
     if args.phase:
         argv.extend(["--phase", args.phase])
+    if args.allow_existing_session:
+        argv.append("--allow-existing-session")
     sys.argv = argv
     warm_main()
 
@@ -568,6 +570,11 @@ def main() -> None:
     p_warm = sub.add_parser("warm", help="Run warming session")
     p_warm.add_argument("--duration", type=int, default=30)
     p_warm.add_argument("--phase", choices=["passive", "light"], default="passive")
+    p_warm.add_argument(
+        "--allow-existing-session",
+        action="store_true",
+        help="Acknowledge this legacy command only warms already logged-in sessions.",
+    )
 
     # produce
     p_prod = sub.add_parser("produce", help="Produce video")

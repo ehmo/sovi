@@ -6,16 +6,15 @@ from unittest.mock import MagicMock, patch
 
 from sovi.device.app_lifecycle import (
     APP_NAMES,
+    APP_STORE_URLS,
     BUNDLES,
     delete_app,
     install_from_app_store,
     login_account,
-    login_instagram,
     login_tiktok,
     reset_idfa,
 )
 from sovi.device.wda_client import BUNDLE_IDS
-
 
 # --- Constants ---
 
@@ -144,11 +143,13 @@ class TestDeleteApp:
         wda = self._make_wda()
         # First post (uninstall) fails, subsequent posts (touchAndHold) succeed
         uninstall_call = [True]  # flag to track first call
+
         def post_side_effect(*args, **kwargs):
             if uninstall_call[0]:
                 uninstall_call[0] = False
                 raise Exception("endpoint not available")
             return MagicMock(status_code=200)
+
         wda.client.post.side_effect = post_side_effect
         # Springboard: find app icon, then menu items
         wda.find_element.side_effect = [
@@ -161,6 +162,28 @@ class TestDeleteApp:
         with patch("time.sleep"), patch("sovi.device.app_lifecycle.events.emit"):
             result = delete_app(wda, "tiktok", device_id="dev-1")
         assert result is True
+
+    def test_wda_uninstall_fallback_requires_delete_confirmation(self):
+        wda = self._make_wda()
+        uninstall_call = [True]
+
+        def post_side_effect(*args, **kwargs):
+            if uninstall_call[0]:
+                uninstall_call[0] = False
+                raise Exception("endpoint not available")
+            return MagicMock(status_code=200)
+
+        wda.client.post.side_effect = post_side_effect
+        wda.find_element.side_effect = [
+            {"ELEMENT": "icon-1"},     # app icon found
+            {"ELEMENT": "remove-el"},  # "Remove App" found
+            None,                       # "Delete App" confirm not found
+            None,                       # "Delete" confirm not found
+        ]
+
+        with patch("time.sleep"), patch("sovi.device.app_lifecycle.events.emit"):
+            result = delete_app(wda, "tiktok", device_id="dev-1")
+        assert result is False
 
     def test_exception_returns_false(self):
         wda = self._make_wda()
@@ -228,13 +251,9 @@ class TestInstallFromAppStore:
 
     def test_install_success(self):
         wda = self._make_wda()
-        # find_element sequence: search tab, search field, search btn, GET btn
-        wda.find_element.side_effect = [
-            {"ELEMENT": "search-tab"},
-            {"ELEMENT": "search-field"},
-            {"ELEMENT": "search-btn"},
-            {"ELEMENT": "get-btn"},
-        ]
+        wda.find_element.side_effect = lambda using, value: (
+            {"ELEMENT": "get-btn"} if using == "accessibility id" and value == "GET" else None
+        )
         wda.app_state.side_effect = [0, 1]  # pre-install: not installed, then installed
 
         auto_mock = MagicMock()
@@ -246,12 +265,13 @@ class TestInstallFromAppStore:
         ):
             result = install_from_app_store(wda, "tiktok", device_id="dev-1", timeout=120)
         assert result is True
+        wda.open_url.assert_called_once_with(APP_STORE_URLS["tiktok"])
 
     def test_install_timeout(self):
         wda = self._make_wda()
-        wda.find_element.side_effect = [
-            {"ELEMENT": "st"}, {"ELEMENT": "sf"}, {"ELEMENT": "sb"}, {"ELEMENT": "gb"},
-        ]
+        wda.find_element.side_effect = lambda using, value: (
+            {"ELEMENT": "get-btn"} if using == "accessibility id" and value == "GET" else None
+        )
         wda.app_state.return_value = 0  # not installed
 
         auto_mock = MagicMock()
@@ -269,3 +289,107 @@ class TestInstallFromAppStore:
         ):
             result = install_from_app_store(wda, "tiktok", device_id="dev-1", timeout=10)
         assert result is False
+
+    def test_install_fails_when_button_not_found(self):
+        wda = self._make_wda()
+        wda.find_element.return_value = None
+        wda.app_state.return_value = 0
+
+        auto_mock = MagicMock()
+        with (
+            patch("time.sleep"),
+            patch("sovi.device.app_lifecycle.events.emit"),
+            patch("sovi.device.app_lifecycle.DeviceAutomation", return_value=auto_mock),
+        ):
+            result = install_from_app_store(wda, "tiktok", device_id="dev-1", timeout=10)
+        assert result is False
+
+
+class TestLoginTikTok:
+    def _make_wda(self):
+        wda = MagicMock()
+        wda.device = MagicMock()
+        wda.device.name = "test"
+        return wda
+
+    def test_missing_email_field_returns_false(self):
+        wda = self._make_wda()
+        auto_mock = MagicMock()
+
+        def find_element_side_effect(using, value):
+            if using == "accessibility id" and value in {"Log in", "Login"}:
+                return {"ELEMENT": "login-btn"}
+            if using == "predicate string" and "SecureTextField" in value:
+                return {"ELEMENT": "password-field"}
+            return None
+
+        wda.find_element.side_effect = find_element_side_effect
+
+        with (
+            patch("time.sleep"),
+            patch("random.uniform", return_value=0.1),
+            patch("sovi.device.app_lifecycle.events.emit"),
+            patch("sovi.device.app_lifecycle.DeviceAutomation", return_value=auto_mock),
+        ):
+            result = login_tiktok(wda, "t@test.com", "pw", device_id="dev-1", account_id="acc-1")
+        assert result is False
+
+    def test_verification_failure_returns_false(self):
+        wda = self._make_wda()
+        auto_mock = MagicMock()
+
+        def find_element_side_effect(using, value):
+            if using == "accessibility id" and value in {"Log in", "Login"}:
+                return {"ELEMENT": "login-btn"}
+            if (
+                using == "predicate string"
+                and "TextField" in value
+                and "SecureTextField" not in value
+            ):
+                return {"ELEMENT": "email-field"}
+            if using == "predicate string" and "SecureTextField" in value:
+                return {"ELEMENT": "password-field"}
+            return None
+
+        wda.find_element.side_effect = find_element_side_effect
+
+        with (
+            patch("time.sleep"),
+            patch("random.uniform", return_value=0.1),
+            patch("sovi.device.app_lifecycle.events.emit"),
+            patch("sovi.device.app_lifecycle.DeviceAutomation", return_value=auto_mock),
+            patch("sovi.device.app_lifecycle._confirm_tiktok_login", return_value=False),
+        ):
+            result = login_tiktok(wda, "t@test.com", "pw", device_id="dev-1", account_id="acc-1")
+        assert result is False
+
+    def test_success_requires_verification(self):
+        wda = self._make_wda()
+        auto_mock = MagicMock()
+
+        def find_element_side_effect(using, value):
+            if using == "accessibility id" and value in {"Log in", "Login"}:
+                return {"ELEMENT": "login-btn"}
+            if (
+                using == "predicate string"
+                and "TextField" in value
+                and "SecureTextField" not in value
+            ):
+                return {"ELEMENT": "email-field"}
+            if using == "predicate string" and "SecureTextField" in value:
+                return {"ELEMENT": "password-field"}
+            return None
+
+        wda.find_element.side_effect = find_element_side_effect
+
+        with (
+            patch("time.sleep"),
+            patch("random.uniform", return_value=0.1),
+            patch("sovi.device.app_lifecycle.events.emit"),
+            patch("sovi.device.app_lifecycle.DeviceAutomation", return_value=auto_mock),
+            patch("sovi.device.app_lifecycle._confirm_tiktok_login", return_value=True),
+        ):
+            result = login_tiktok(wda, "t@test.com", "pw", device_id="dev-1", account_id="acc-1")
+        assert result is True
+        wda.element_value.assert_any_call("email-field", "t@test.com")
+        wda.element_value.assert_any_call("password-field", "pw")

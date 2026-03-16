@@ -71,10 +71,12 @@ sovi devices setup --name iPhone-C    # Generate launchd plists
 
 ### warm (Legacy)
 
-Run a single warming session on all devices.
+Run a single warming session on all devices that are already logged in.
+This command does not perform delete, reinstall, or login, so it is not safe
+for real account warm-up. Use `sovi scheduler start` for the production path.
 
 ```bash
-sovi warm [--duration 30] [--phase passive|light]
+sovi warm --allow-existing-session [--duration 30] [--phase passive|light]
 ```
 
 ### produce

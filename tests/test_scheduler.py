@@ -16,12 +16,10 @@ if "numpy" not in sys.modules:
     _np.zeros = lambda *a, **k: []  # type: ignore[attr-defined]
     sys.modules["numpy"] = _np
 
-import pytest  # noqa: E402
 
-from sovi.device.scheduler import DeviceScheduler, DeviceThread, WARMABLE_PLATFORMS  # noqa: E402
+from sovi.device.scheduler import WARMABLE_PLATFORMS, DeviceScheduler, DeviceThread  # noqa: E402
 from sovi.device.warming import WarmingPhase  # noqa: E402
 from sovi.models import AccountState
-
 
 # Patch targets — scheduler imports from sovi.db and various submodules
 _SYNC_CONN = "sovi.device.scheduler.sync_conn"
@@ -279,6 +277,69 @@ class TestGetNextTask:
 
 
 class TestExecuteWarmingErrorDetection:
+    def test_wifi_enforcement_failure_returns_false(self):
+        sched = _make_scheduler()
+        dt = _make_device_thread()
+        task = {
+            "type": "warm",
+            "account": {
+                "id": "acc-1",
+                "platform": "tiktok",
+                "username": "testuser",
+                "current_state": AccountState.WARMING_P1,
+                "warming_day_count": 2,
+            },
+        }
+
+        from sovi.device.wda_client import WDADevice
+
+        device = WDADevice(name="test", udid="abc123", wda_port=8100)
+        mock_session = MagicMock()
+        mock_session.ensure_wifi_off.return_value = False
+
+        with (
+            patch("sovi.device.scheduler.WDASession", return_value=mock_session),
+            patch("sovi.device.scheduler.delete_app") as mock_delete,
+            patch(_EVENTS_EMIT),
+            patch("time.sleep"),
+        ):
+            result = sched._execute_warming(device, dt, task)
+
+        assert result is False
+        mock_delete.assert_not_called()
+
+    def test_delete_failure_returns_false(self):
+        sched = _make_scheduler()
+        dt = _make_device_thread()
+        task = {
+            "type": "warm",
+            "account": {
+                "id": "acc-1",
+                "platform": "tiktok",
+                "username": "testuser",
+                "current_state": AccountState.WARMING_P1,
+                "warming_day_count": 2,
+            },
+        }
+
+        from sovi.device.wda_client import WDADevice
+
+        device = WDADevice(name="test", udid="abc123", wda_port=8100)
+        mock_session = MagicMock()
+        mock_session.ensure_wifi_off.return_value = True
+
+        with (
+            patch("sovi.device.scheduler.WDASession", return_value=mock_session),
+            patch("sovi.device.scheduler.delete_app", return_value=False),
+            patch("sovi.device.scheduler.install_from_app_store") as mock_install,
+            patch(_EVENTS_EMIT),
+            patch("time.sleep"),
+        ):
+            result = sched._execute_warming(device, dt, task)
+
+        assert result is False
+        mock_install.assert_not_called()
+
     def test_run_warming_error_dict_returns_false(self):
         """F-085: run_warming returning {"error": "..."} must cause _execute_warming to return False."""
         sched = _make_scheduler()
@@ -301,7 +362,7 @@ class TestExecuteWarmingErrorDetection:
 
         with (
             patch("sovi.device.scheduler.WDASession", return_value=mock_session),
-            patch("sovi.device.scheduler.delete_app"),
+            patch("sovi.device.scheduler.delete_app", return_value=True),
             patch("sovi.device.scheduler.reset_idfa"),
             patch("sovi.device.scheduler.install_from_app_store", return_value=True),
             patch("sovi.device.scheduler.login_account", return_value=True),
@@ -335,7 +396,7 @@ class TestExecuteWarmingErrorDetection:
 
         with (
             patch("sovi.device.scheduler.WDASession", return_value=mock_session),
-            patch("sovi.device.scheduler.delete_app"),
+            patch("sovi.device.scheduler.delete_app", return_value=True),
             patch("sovi.device.scheduler.reset_idfa"),
             patch("sovi.device.scheduler.install_from_app_store", return_value=True),
             patch("sovi.device.scheduler.login_account", return_value=True),

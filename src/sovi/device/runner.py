@@ -17,8 +17,8 @@ import sys
 from datetime import datetime
 
 from sovi.device.device_registry import get_active_devices, to_wda_device
-from sovi.device.wda_client import WDADevice, WDASession
 from sovi.device.warming import WarmingConfig, WarmingPhase, run_warming
+from sovi.device.wda_client import WDADevice, WDASession
 
 logging.basicConfig(
     level=logging.INFO,
@@ -26,6 +26,13 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 logger = logging.getLogger(__name__)
+
+LEGACY_WARM_WARNING = (
+    "This runner bypasses delete/install/login and is unsafe for account warm-up. "
+    "Use `sovi scheduler start` for real account warming, or pass "
+    "`--allow-existing-session` only for manual testing on an already logged-in app."
+)
+
 
 def _load_devices() -> dict[str, WDADevice]:
     """Load devices from DB registry, falling back to empty dict."""
@@ -70,7 +77,16 @@ def main() -> None:
     parser.add_argument("--phase", choices=list(PHASE_MAP), default="passive")
     parser.add_argument("--niche", default="personal_finance")
     parser.add_argument("--duration", type=int, default=30, help="Duration in minutes")
+    parser.add_argument(
+        "--allow-existing-session",
+        action="store_true",
+        help="Acknowledge this command only warms already logged-in sessions.",
+    )
     args = parser.parse_args()
+
+    if not args.allow_existing_session:
+        logger.error(LEGACY_WARM_WARNING)
+        sys.exit(2)
 
     devices = _load_devices()
     if not devices:

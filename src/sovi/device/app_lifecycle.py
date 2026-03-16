@@ -14,12 +14,12 @@ from __future__ import annotations
 import logging
 import random
 import time
-from typing import Any
+from contextlib import suppress
 
 from sovi import events
 from sovi.auth import totp
 from sovi.crypto import decrypt
-from sovi.device.wda_client import BUNDLE_IDS, WDASession, DeviceAutomation
+from sovi.device.wda_client import BUNDLE_IDS, DeviceAutomation, WDASession
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +41,121 @@ APP_STORE_URLS: dict[str, str] = {
     "x_twitter": "itms-apps://itunes.apple.com/app/id333903271",
     "twitter": "itms-apps://itunes.apple.com/app/id333903271",
 }
+
+TIKTOK_HOME_LABELS = (
+    "For You",
+    "Following",
+    "Friends",
+    "Inbox",
+    "Profile",
+    "Home",
+)
+
+TIKTOK_AUTH_LABELS = (
+    "Use phone / email / username",
+    "Use phone/email/username",
+    "Email / Username",
+    "Use email/username",
+    "Log in",
+    "Log In",
+    "Login",
+    "Sign up",
+)
+
+TIKTOK_HOME_SOURCE_MARKERS = ("for you", "following", "friends", "inbox", "profile")
+TIKTOK_AUTH_SOURCE_MARKERS = (
+    "log in",
+    "signup",
+    "sign up",
+    "email / username",
+    "use phone / email / username",
+    "verification code",
+    "captcha",
+)
+
+
+def _tap_accessibility_label(
+    wda: WDASession,
+    labels: tuple[str, ...] | list[str],
+    *,
+    delay_s: float = 0.0,
+) -> bool:
+    """Tap the first matching accessibility label."""
+    for label in labels:
+        el = wda.find_element("accessibility id", label)
+        el_id = el.get("ELEMENT", "") if el else ""
+        if el_id:
+            wda.element_click(el_id)
+            if delay_s:
+                time.sleep(delay_s)
+            return True
+    return False
+
+
+def _source_text(wda: WDASession) -> str:
+    """Best-effort page source used only for login verification fallbacks."""
+    try:
+        source = wda.source()
+    except Exception:
+        return ""
+    return source.lower() if isinstance(source, str) else ""
+
+
+def _tiktok_home_visible(wda: WDASession) -> bool:
+    """Detect whether TikTok looks logged in and on a feed/profile surface."""
+    for label in TIKTOK_HOME_LABELS:
+        if wda.find_element("accessibility id", label):
+            return True
+
+    source = _source_text(wda)
+    return any(marker in source for marker in TIKTOK_HOME_SOURCE_MARKERS)
+
+
+def _tiktok_auth_visible(wda: WDASession) -> bool:
+    """Detect whether TikTok is still on an auth/challenge surface."""
+    for label in TIKTOK_AUTH_LABELS:
+        if wda.find_element("accessibility id", label):
+            return True
+
+    email_field = wda.find_element(
+        "predicate string",
+        'type == "XCUIElementTypeTextField" AND '
+        '(name CONTAINS "email" OR name CONTAINS "Email" '
+        'OR placeholderValue CONTAINS "email")',
+    )
+    if email_field:
+        return True
+
+    pw_field = wda.find_element("predicate string", 'type == "XCUIElementTypeSecureTextField"')
+    if pw_field:
+        return True
+
+    source = _source_text(wda)
+    return any(marker in source for marker in TIKTOK_AUTH_SOURCE_MARKERS)
+
+
+def _confirm_tiktok_login(wda: WDASession, auto: DeviceAutomation, *, attempts: int = 3) -> bool:
+    """Verify TikTok is past auth and on an in-app surface before warming."""
+    for attempt in range(attempts):
+        auto.dismiss_popups(max_attempts=2)
+        if _tiktok_home_visible(wda):
+            return True
+        if _tiktok_auth_visible(wda):
+            time.sleep(2)
+            continue
+
+        if attempt == 0:
+            try:
+                wda.swipe_up(duration=0.4)
+            except Exception:
+                logger.debug("TikTok post-login swipe failed", exc_info=True)
+            time.sleep(1)
+            if _tiktok_home_visible(wda):
+                return True
+
+        time.sleep(2)
+
+    return False
 
 
 def reset_idfa(wda: WDASession, *, device_id: str | None = None) -> bool:
@@ -134,10 +249,8 @@ def reset_idfa(wda: WDASession, *, device_id: str | None = None) -> bool:
                     "IDFA reset exception",
                     device_id=device_id)
         # Go home on failure
-        try:
+        with suppress(Exception):
             wda.press_button("home")
-        except Exception:
-            pass
         return False
 
 
@@ -197,24 +310,36 @@ def delete_app(wda: WDASession, platform: str, *, device_id: str | None = None) 
             return False
 
         # Long press (3s) to trigger jiggle mode
-        resp = wda.client.post(f"{wda._s}/wda/element/{el_id}/touchAndHold", json={"duration": 3.0})
+        wda.client.post(f"{wda._s}/wda/element/{el_id}/touchAndHold", json={"duration": 3.0})
         time.sleep(2)
 
         # Look for "Remove App" or "Delete App" option
+        remove_clicked = False
         for label in ["Remove App", "Delete App"]:
             remove_el = wda.find_element("accessibility id", label)
-            if remove_el:
-                wda.element_click(remove_el["ELEMENT"])
+            remove_id = remove_el.get("ELEMENT", "") if remove_el else ""
+            if remove_id:
+                wda.element_click(remove_id)
                 time.sleep(1)
+                remove_clicked = True
                 break
+        if not remove_clicked:
+            logger.warning("Could not find remove action for %s", app_name)
+            return False
 
         # Confirm deletion
+        confirm_clicked = False
         for label in ["Delete App", "Delete"]:
             confirm_el = wda.find_element("accessibility id", label)
-            if confirm_el:
-                wda.element_click(confirm_el["ELEMENT"])
+            confirm_id = confirm_el.get("ELEMENT", "") if confirm_el else ""
+            if confirm_id:
+                wda.element_click(confirm_id)
                 time.sleep(2)
+                confirm_clicked = True
                 break
+        if not confirm_clicked:
+            logger.warning("Could not confirm delete for %s", app_name)
+            return False
 
         logger.info("Deleted %s via springboard", platform)
         events.emit("device", "info", "app_deleted",
@@ -252,8 +377,11 @@ def install_from_app_store(
         return False
 
     auto = DeviceAutomation(wda)
+    install_started = False
 
     try:
+        pre_state = wda.app_state(bundle_id)
+
         # Primary: Use direct App Store URL scheme
         store_url = APP_STORE_URLS.get(platform)
         if store_url:
@@ -292,6 +420,7 @@ def install_from_app_store(
                         return True
                     logger.info("Tapping '%s' for %s", label, app_name)
                     wda.element_click(get_btn["ELEMENT"])
+                    install_started = True
                     break
             else:
                 # Try cloud download icon (redownload from purchases)
@@ -302,6 +431,7 @@ def install_from_app_store(
                 if cloud_btn:
                     logger.info("Tapping cloud download for %s", app_name)
                     wda.element_click(cloud_btn.get("ELEMENT", ""))
+                    install_started = True
 
         else:
             # Fallback: search-based install
@@ -342,6 +472,7 @@ def install_from_app_store(
                 get_btn = wda.find_element("accessibility id", label)
                 if get_btn:
                     wda.element_click(get_btn["ELEMENT"])
+                    install_started = True
                     break
             else:
                 cloud_btn = wda.find_element(
@@ -350,18 +481,28 @@ def install_from_app_store(
                 )
                 if cloud_btn:
                     wda.element_click(cloud_btn.get("ELEMENT", ""))
+                    install_started = True
+
+        if not install_started:
+            logger.error("Could not find install button for %s", app_name)
+            events.emit("device", "error", "install_failed",
+                        f"Could not start App Store install for {platform}",
+                        device_id=device_id,
+                        context={"platform": platform, "reason": "install_button_not_found"})
+            return False
 
         # Wait for install to complete
-        # Capture pre-install state so we detect a real state change.
-        # If delete_app failed the app is still at state >= 1; we must
-        # wait for the state to increase (e.g. 1→4 after fresh install).
-        pre_state = wda.app_state(bundle_id)
-        logger.info("Installing %s, waiting up to %ds... (pre_state=%s)", app_name, timeout, pre_state)
+        logger.info(
+            "Installing %s, waiting up to %ds... (pre_state=%s)",
+            app_name,
+            timeout,
+            pre_state,
+        )
         deadline = time.time() + timeout
         while time.time() < deadline:
             # Check if app is now installed
             state = wda.app_state(bundle_id)
-            if state >= 1 and state > pre_state:  # state increased → fresh install completed
+            if state >= 1 and (pre_state <= 0 or state > pre_state):
                 logger.info("Successfully installed %s", app_name)
                 events.emit("device", "info", "app_installed",
                            f"Installed {platform} from App Store",
@@ -410,51 +551,55 @@ def login_tiktok(
         auto.dismiss_popups(max_attempts=3)
 
         # Look for "Use phone / email / username" or "Log in"
-        for label in ["Use phone / email / username", "Log in", "Log In"]:
-            el = wda.find_element("accessibility id", label)
-            if el:
-                wda.element_click(el["ELEMENT"])
-                time.sleep(2)
-                break
+        if not _tap_accessibility_label(
+            wda,
+            ("Use phone / email / username", "Log in", "Log In"),
+            delay_s=2,
+        ):
+            logger.warning("TikTok login entry point not found for %s", email)
+            return False
 
         # Switch to email/username login
-        for label in ["Email / Username", "Use email/username"]:
-            el = wda.find_element("accessibility id", label)
-            if el:
-                wda.element_click(el["ELEMENT"])
-                time.sleep(1)
-                break
+        _tap_accessibility_label(
+            wda,
+            ("Email / Username", "Use email/username"),
+            delay_s=1,
+        )
 
         # Enter email
         email_field = wda.find_element(
             "predicate string",
-            'type == "XCUIElementTypeTextField" AND (name CONTAINS "email" OR name CONTAINS "Email" OR placeholderValue CONTAINS "email")'
+            'type == "XCUIElementTypeTextField" AND '
+            '(name CONTAINS "email" OR name CONTAINS "Email" '
+            'OR placeholderValue CONTAINS "email")',
         )
-        if email_field:
-            el_id = email_field["ELEMENT"]
-            wda.element_click(el_id)
-            time.sleep(0.3)
-            wda.element_value(el_id, email)
-            time.sleep(random.uniform(0.5, 1.0))
+        email_field_id = email_field.get("ELEMENT", "") if email_field else ""
+        if not email_field_id:
+            logger.warning("TikTok email field not found for %s", email)
+            return False
+        wda.element_click(email_field_id)
+        time.sleep(0.3)
+        wda.element_value(email_field_id, email)
+        time.sleep(random.uniform(0.5, 1.0))
 
         # Enter password
         pw_field = wda.find_element(
             "predicate string",
             'type == "XCUIElementTypeSecureTextField"'
         )
-        if pw_field:
-            el_id = pw_field["ELEMENT"]
-            wda.element_click(el_id)
-            time.sleep(0.3)
-            wda.element_value(el_id, password)
-            time.sleep(random.uniform(0.5, 1.0))
+        pw_field_id = pw_field.get("ELEMENT", "") if pw_field else ""
+        if not pw_field_id:
+            logger.warning("TikTok password field not found for %s", email)
+            return False
+        wda.element_click(pw_field_id)
+        time.sleep(0.3)
+        wda.element_value(pw_field_id, password)
+        time.sleep(random.uniform(0.5, 1.0))
 
         # Tap Login
-        for label in ["Log in", "Log In", "Login"]:
-            el = wda.find_element("accessibility id", label)
-            if el:
-                wda.element_click(el["ELEMENT"])
-                break
+        if not _tap_accessibility_label(wda, ("Log in", "Log In", "Login")):
+            logger.warning("TikTok submit button not found for %s", email)
+            return False
 
         time.sleep(5)
 
@@ -462,7 +607,8 @@ def login_tiktok(
         if totp_secret:
             totp_field = wda.find_element(
                 "predicate string",
-                'type == "XCUIElementTypeTextField" AND (name CONTAINS "code" OR name CONTAINS "verification")'
+                'type == "XCUIElementTypeTextField" AND '
+                '(name CONTAINS "code" OR name CONTAINS "verification")',
             )
             if totp_field:
                 code = totp.get_code(totp_secret)
@@ -480,10 +626,13 @@ def login_tiktok(
         auto.dismiss_popups(max_attempts=3)
         time.sleep(2)
 
-        # Verify we're logged in by checking for FYP elements
-        # If we can swipe, we're on the main feed
-        wda.swipe_up(duration=0.4)
-        time.sleep(1)
+        if not _confirm_tiktok_login(wda, auto):
+            logger.warning("TikTok login verification failed for %s", email)
+            events.emit("account", "error", "login_failed",
+                        f"TikTok login verification failed for {email}",
+                        device_id=device_id, account_id=account_id,
+                        context={"platform": "tiktok", "email": email, "step": "verify"})
+            return False
 
         logger.info("TikTok login successful for %s", email)
         events.emit("account", "info", "login_success",
@@ -531,7 +680,9 @@ def login_instagram(
         # Enter email/username
         username_field = wda.find_element(
             "predicate string",
-            'type == "XCUIElementTypeTextField" AND (name CONTAINS "Username" OR name CONTAINS "email" OR name CONTAINS "Phone")'
+            'type == "XCUIElementTypeTextField" AND '
+            '(name CONTAINS "Username" OR name CONTAINS "email" '
+            'OR name CONTAINS "Phone")',
         )
         if username_field:
             el_id = username_field["ELEMENT"]
