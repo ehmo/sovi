@@ -507,13 +507,13 @@ def cmd_devices(args: argparse.Namespace) -> None:
     if action == "list":
         conn = sync_conn()
         with conn.cursor() as cur:
-            cur.execute("SELECT * FROM devices ORDER BY name")
+            cur.execute("SELECT * FROM devices ORDER BY label")
             rows = cur.fetchall()
 
             print(f"\n{'Name':<15} {'Model':<12} {'iOS':<6} {'Port':>5} {'Status':<14} {'UDID'}")
             print("-" * 80)
             for r in rows:
-                print(f"  {(r['name'] or '?'):<13} {r['model']:<12} {r['ios_version']:<6} {(r['wda_port'] or 0):>5} {r['status']:<14} {r['udid'][:20]}...")
+                print(f"  {(r['label'] or '?'):<13} {r['model']:<12} {r['ios_version']:<6} {(r['appium_port'] or 0):>5} {r['status']:<14} {r['udid'][:20]}...")
 
             print(f"\n  Total: {len(rows)} devices\n")
         conn.close()
@@ -530,7 +530,7 @@ def cmd_devices(args: argparse.Namespace) -> None:
             wda_port=args.wda_port,
         )
         if result:
-            print(f"Registered device: {result['name']} (port {result['wda_port']})")
+            print(f"Registered device: {result['label']} (port {result['appium_port']})")
         else:
             print("Failed to register device")
 
