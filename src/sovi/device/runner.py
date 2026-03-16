@@ -16,6 +16,7 @@ import logging
 import sys
 from datetime import datetime
 
+from sovi.device.device_registry import get_active_devices, to_wda_device
 from sovi.device.wda_client import WDADevice, WDASession
 from sovi.device.warming import WarmingConfig, WarmingPhase, run_warming
 
@@ -26,11 +27,17 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Device registry
-DEVICES = {
-    "a": WDADevice(name="iPhone-A", udid="00008140-001975DC3678801C", wda_port=8100),
-    "b": WDADevice(name="iPhone-B", udid="00008140-001A00141163001C", wda_port=8101),
-}
+def _load_devices() -> dict[str, WDADevice]:
+    """Load devices from DB registry, falling back to empty dict."""
+    try:
+        rows = get_active_devices()
+        return {
+            (row.get("name") or row.get("label", "unknown")): to_wda_device(row)
+            for row in rows
+        }
+    except Exception:
+        logger.warning("Could not load devices from registry", exc_info=True)
+        return {}
 
 # Niche hashtags for algorithm training
 NICHE_HASHTAGS = {
@@ -58,17 +65,25 @@ PHASE_MAP = {
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="SOVI Warming Runner")
-    parser.add_argument("--device", choices=["a", "b", "all"], default="all")
+    parser.add_argument("--device", default="all", help="Device name or 'all'")
     parser.add_argument("--platform", choices=["tiktok", "instagram", "reddit"], required=True)
     parser.add_argument("--phase", choices=list(PHASE_MAP), default="passive")
     parser.add_argument("--niche", default="personal_finance")
     parser.add_argument("--duration", type=int, default=30, help="Duration in minutes")
     args = parser.parse_args()
 
+    devices = _load_devices()
+    if not devices:
+        logger.error("No active devices found in registry")
+        sys.exit(1)
+
     if args.device == "all":
-        targets = list(DEVICES.values())
+        targets = list(devices.values())
+    elif args.device in devices:
+        targets = [devices[args.device]]
     else:
-        targets = [DEVICES[args.device]]
+        logger.error("Device '%s' not found. Available: %s", args.device, list(devices.keys()))
+        sys.exit(1)
 
     hashtags = NICHE_HASHTAGS.get(args.niche, [])
 

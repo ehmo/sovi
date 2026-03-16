@@ -20,6 +20,7 @@ from datetime import datetime
 import httpx
 import psycopg
 
+from sovi.device.device_registry import get_active_devices, to_wda_device
 from sovi.device.wda_client import WDADevice, WDASession
 from sovi.device.warming import WarmingConfig, WarmingPhase, run_warming
 
@@ -37,21 +38,15 @@ try:
 except Exception:
     DATABASE_URL = "postgresql://sovi:sovi@localhost:5432/sovi"
 
-# Device registry
-DEVICES = {
-    "a": WDADevice(name="iPhone-A", udid="00008140-001975DC3678801C", wda_port=8100),
-    "b": WDADevice(name="iPhone-B", udid="00008140-001A00141163001C", wda_port=8101),
+# Per-device platform assignments for warming.
+# Keyed by device label (from DB). Devices not listed here warm all platforms.
+DEVICE_ASSIGNMENTS: dict[str, list[str]] = {
+    "iPhone-A": ["reddit", "tiktok", "youtube"],
+    "iPhone-B": ["instagram", "twitter", "tiktok"],
 }
 
-# What each device warms — all 5 social apps on both phones.
-# Split platforms across devices to keep session times reasonable.
-# Each platform gets ~30 min passive or ~20 min engagement.
-# iPhone A: Reddit, TikTok, YouTube
-# iPhone B: Instagram, X/Twitter, TikTok
-DEVICE_ASSIGNMENTS = {
-    "a": ["reddit", "tiktok", "youtube"],
-    "b": ["instagram", "twitter", "tiktok"],
-}
+# Default platforms when a device has no explicit assignment
+DEFAULT_PLATFORMS = ["reddit", "tiktok", "instagram"]
 
 PHASE_MAP = {
     "passive": WarmingPhase.PASSIVE,
@@ -192,8 +187,16 @@ def main() -> None:
     threads: list[threading.Thread] = []
     all_results: list[list[dict]] = []
 
-    for device_key, platforms in DEVICE_ASSIGNMENTS.items():
-        device = DEVICES[device_key]
+    # Load devices from DB registry
+    db_devices = get_active_devices()
+    if not db_devices:
+        logger.error("No active devices found in database")
+        return
+
+    for row in db_devices:
+        device = to_wda_device(row)
+        device_name = row.get("name") or row.get("label", "")
+        platforms = DEVICE_ASSIGNMENTS.get(device_name, DEFAULT_PLATFORMS)
         result_holder: list[dict] = []
         all_results.append(result_holder)
 
