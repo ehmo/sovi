@@ -188,7 +188,10 @@ def check_cooldown(device_id: str) -> CheckResult:
         last_ended = last_ended.replace(tzinfo=timezone.utc)
 
     elapsed = (datetime.now(timezone.utc) - last_ended).total_seconds()
-    required = random.uniform(settings.min_cooldown_seconds, settings.max_cooldown_seconds)
+    # Seed RNG with device_id + session end time so the cooldown is
+    # deterministic across repeated checks for the same session boundary.
+    rng = random.Random(f"{device_id}:{last_ended.isoformat()}")
+    required = rng.uniform(settings.min_cooldown_seconds, settings.max_cooldown_seconds)
     remaining = required - elapsed
 
     if remaining > 0:
