@@ -120,6 +120,9 @@ def _fal_generate(prompt: str, image_url: str | None = None) -> bytes | None:
                 elif status_data.get("status") == "FAILED":
                     logger.error("fal.ai generation failed: %s", status_data)
                     return None
+            else:
+                logger.warning("fal.ai generation timed out after 5 minutes (request_id=%s)", request_id)
+                return None
 
         # Extract image URL from result
         images = result.get("images", [])
