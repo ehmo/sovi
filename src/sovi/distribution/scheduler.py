@@ -14,6 +14,8 @@ PLATFORM_SCHEDULE = {
     Platform.YOUTUBE: {"hour": 15, "day_offset": 1},     # Day 1, 3 PM
     Platform.TWITTER: {"hour": 10, "day_offset": 2},     # Day 2, 10 AM
     Platform.REDDIT: {"hour": 7, "day_offset": 3},       # Day 3, 7 AM weekday
+    Platform.FACEBOOK: {"hour": 12, "day_offset": 2},    # Day 2, 12 PM
+    Platform.LINKEDIN: {"hour": 9, "day_offset": 3},     # Day 3, 9 AM weekday
 }
 
 
