@@ -198,7 +198,7 @@ def main() -> None:
         all_results.append(result_holder)
 
         t = threading.Thread(
-            target=lambda d, p, r: r.extend(warm_device(d, p, phase, args.duration)),
+            target=lambda d, p, r, ph=phase: r.extend(warm_device(d, p, ph, args.duration)),
             args=(device, platforms, result_holder),
         )
         threads.append(t)
