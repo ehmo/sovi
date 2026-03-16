@@ -1,5 +1,14 @@
 -- SOVI Initial Schema — PostgreSQL 17 + TimescaleDB 2.25
 -- Run: psql -d sovi -f migrations/001_initial_schema.sql
+--
+-- NOTE: This migration uses outdated column names and enum values.
+-- The AUTHORITATIVE schema is db/schema.sql. Key differences:
+--   devices.name      → devices.label
+--   devices.wda_port  → devices.appium_port
+--   devices.connected_since → devices.last_heartbeat
+--   device_status enum 'active' → 'available'/'in_use'
+--   devices.current_proxy_id → devices.proxy_id
+-- Do NOT use this file as a reference for column names.
 
 -- =============================================================================
 -- EXTENSIONS (already created, but idempotent)
