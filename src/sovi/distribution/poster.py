@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime
 from uuid import UUID
 
@@ -23,6 +24,12 @@ LATE_PLATFORM_MAP = {
 }
 
 
+def _read_file_bytes(path: str) -> bytes:
+    """Read a file synchronously — intended for use with asyncio.to_thread."""
+    with open(path, "rb") as f:
+        return f.read()
+
+
 async def post_via_late(request: DistributionRequest) -> dict:
     """Post content to a platform via Late API (Accelerate tier)."""
     platform = LATE_PLATFORM_MAP.get(request.platform)
@@ -30,15 +37,15 @@ async def post_via_late(request: DistributionRequest) -> dict:
         raise ValueError(f"Unsupported platform: {request.platform}")
 
     async with httpx.AsyncClient(timeout=60.0) as client:
-        # Upload media first
-        with open(request.export_path, "rb") as f:
-            upload_resp = await client.post(
-                f"{LATE_BASE_URL}/media/upload",
-                headers={"Authorization": f"Bearer {settings.late_api_key}"},
-                files={"file": ("video.mp4", f, "video/mp4")},
-            )
-            upload_resp.raise_for_status()
-            media_id = upload_resp.json()["id"]
+        # Upload media first — read file off the event loop to avoid blocking
+        file_data = await asyncio.to_thread(_read_file_bytes, request.export_path)
+        upload_resp = await client.post(
+            f"{LATE_BASE_URL}/media/upload",
+            headers={"Authorization": f"Bearer {settings.late_api_key}"},
+            files={"file": ("video.mp4", file_data, "video/mp4")},
+        )
+        upload_resp.raise_for_status()
+        media_id = upload_resp.json()["id"]
 
         # Build caption with hashtags
         caption = request.caption
