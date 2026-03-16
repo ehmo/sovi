@@ -9,7 +9,7 @@ Generates consistent face photos for a persona:
 from __future__ import annotations
 
 import logging
-import os
+import time
 from pathlib import Path
 from typing import Any
 
@@ -59,6 +59,25 @@ def _build_base_prompt(persona: dict) -> str:
     return ", ".join(parts)
 
 
+def _fal_poll_result(model: str, request_id: str, headers: dict[str, str]) -> dict | None:
+    """Poll fal.ai queue until the request completes or times out (5 min)."""
+    status_url = f"{FAL_BASE}/{model}/requests/{request_id}/status"
+    result_url = f"{FAL_BASE}/{model}/requests/{request_id}"
+
+    for _ in range(60):
+        time.sleep(5)
+        status_resp = httpx.get(status_url, headers=headers, timeout=15.0)
+        status_data = status_resp.json()
+        if status_data.get("status") == "COMPLETED":
+            return httpx.get(result_url, headers=headers, timeout=30.0).json()
+        if status_data.get("status") == "FAILED":
+            logger.error("fal.ai generation failed: %s", status_data)
+            return None
+
+    logger.warning("fal.ai generation timed out after 5 minutes (request_id=%s)", request_id)
+    return None
+
+
 def _fal_generate(prompt: str, image_url: str | None = None) -> tuple[bytes, str] | None:
     """Call fal.ai Flux to generate an image.
 
@@ -74,9 +93,7 @@ def _fal_generate(prompt: str, image_url: str | None = None) -> tuple[bytes, str
         "Content-Type": "application/json",
     }
 
-    # Use Flux Schnell for speed, or Dev for quality
     model = "fal-ai/flux/schnell"
-
     payload: dict[str, Any] = {
         "prompt": prompt,
         "image_size": "square_hd",
@@ -85,46 +102,20 @@ def _fal_generate(prompt: str, image_url: str | None = None) -> tuple[bytes, str
     }
 
     if image_url:
-        # Use Flux with IP-Adapter for face consistency
         model = "fal-ai/flux-general/image-to-image"
         payload["image_url"] = image_url
         payload["strength"] = 0.65
 
     try:
-        # Submit to queue
-        resp = httpx.post(
-            f"{FAL_BASE}/{model}",
-            headers=headers,
-            json=payload,
-            timeout=30.0,
-        )
+        resp = httpx.post(f"{FAL_BASE}/{model}", headers=headers, json=payload, timeout=30.0)
         resp.raise_for_status()
         result = resp.json()
 
-        # Check if queued (async) or direct result
         if "request_id" in result:
-            # Poll for result
-            request_id = result["request_id"]
-            status_url = f"https://queue.fal.run/{model}/requests/{request_id}/status"
-            result_url = f"https://queue.fal.run/{model}/requests/{request_id}"
-
-            for _ in range(60):  # up to 5 minutes
-                import time
-                time.sleep(5)
-                status_resp = httpx.get(status_url, headers=headers, timeout=15.0)
-                status_data = status_resp.json()
-                if status_data.get("status") == "COMPLETED":
-                    result_resp = httpx.get(result_url, headers=headers, timeout=30.0)
-                    result = result_resp.json()
-                    break
-                elif status_data.get("status") == "FAILED":
-                    logger.error("fal.ai generation failed: %s", status_data)
-                    return None
-            else:
-                logger.warning("fal.ai generation timed out after 5 minutes (request_id=%s)", request_id)
+            result = _fal_poll_result(model, result["request_id"], headers)
+            if result is None:
                 return None
 
-        # Extract image URL from result
         images = result.get("images", [])
         if not images:
             logger.error("No images in fal.ai response")
@@ -134,7 +125,6 @@ def _fal_generate(prompt: str, image_url: str | None = None) -> tuple[bytes, str
         if not image_url_result:
             return None
 
-        # Download the image
         img_resp = httpx.get(image_url_result, timeout=30.0)
         img_resp.raise_for_status()
         return img_resp.content, image_url_result

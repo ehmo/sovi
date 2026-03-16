@@ -11,18 +11,13 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
-import time
 
 import httpx
 
-from sovi.config import load_all_niche_configs, settings
+from sovi.config import load_all_niche_configs
+from sovi.research.scrapers import random_ua
 
 logger = logging.getLogger(__name__)
-
-_USER_AGENTS = [
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:123.0) Gecko/20100101 Firefox/123.0",
-]
 
 
 # ---------------------------------------------------------------------------
@@ -36,7 +31,7 @@ async def fetch_creative_center_hashtags(country: str = "US", limit: int = 50) -
     params = {"page": 1, "limit": limit, "country_code": country, "period": 7}
 
     async with httpx.AsyncClient(timeout=15.0) as client:
-        resp = await client.get(url, params=params, headers={"User-Agent": random.choice(_USER_AGENTS)})
+        resp = await client.get(url, params=params, headers={"User-Agent": random_ua()})
         data = resp.json()
 
     if data.get("code") != 0:
@@ -65,7 +60,7 @@ async def fetch_google_autocomplete(query: str) -> list[str]:
     """Get Google search autocomplete suggestions for a query."""
     url = "https://www.google.com/complete/search"
     params = {"q": query, "client": "firefox"}
-    headers = {"User-Agent": random.choice(_USER_AGENTS)}
+    headers = {"User-Agent": random_ua()}
 
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
@@ -151,44 +146,19 @@ async def scrape_tiktok_trends() -> list[dict]:
 
 def save_trending_to_db(trends: list[dict]) -> int:
     """Save TikTok trending data as trending_topics in the database."""
-    import psycopg
+    from sovi.research.scrapers import save_trending_to_db as _save
 
-    if not trends:
-        return 0
-
-    niche_ids: dict[str, str] = {}
-    count = 0
-
-    with psycopg.connect(settings.database_url) as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT id, slug FROM niches")
-            for row in cur.fetchall():
-                niche_ids[row[1]] = str(row[0])
-
-            for t in trends:
-                niche_slug = t.get("niche_slug")
-                niche_id = niche_ids.get(niche_slug) if niche_slug else None
-
-                cur.execute(
-                    """INSERT INTO trending_topics
-                       (platform, topic_text, hashtag, trend_score, niche_id, detected_at, is_active)
-                       VALUES ('tiktok', %s, %s, %s, %s, now(), TRUE)
-                       ON CONFLICT (platform, topic_text, niche_id)
-                       WHERE is_active = true
-                       DO UPDATE SET
-                           trend_score = GREATEST(trending_topics.trend_score, EXCLUDED.trend_score),
-                           hashtag = EXCLUDED.hashtag,
-                           detected_at = now()""",
-                    (
-                        t.get("hashtag", ""),
-                        f"#{t.get('hashtag', '')}",
-                        float(t.get("trend_score", 0)),
-                        niche_id,
-                    ),
-                )
-                count += 1
-            conn.commit()
-    return count
+    # Normalize tiktok trend dicts to the shared schema
+    items = [
+        {
+            "topic_text": t.get("hashtag", ""),
+            "hashtag": f"#{t.get('hashtag', '')}",
+            "trend_score": float(t.get("trend_score", 0)),
+            "niche_slug": t.get("niche_slug"),
+        }
+        for t in trends
+    ]
+    return _save(items, "tiktok")
 
 
 # ---------------------------------------------------------------------------

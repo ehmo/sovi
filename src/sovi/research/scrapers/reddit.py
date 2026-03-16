@@ -10,21 +10,13 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
-import time
-from datetime import UTC, datetime
 
 import httpx
 
 from sovi.config import load_all_niche_configs, settings
+from sovi.research.scrapers import random_ua
 
 logger = logging.getLogger(__name__)
-
-# Reddit blocks requests without a real-looking User-Agent
-_USER_AGENTS = [
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.3 Safari/605.1.15",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:123.0) Gecko/20100101 Firefox/123.0",
-]
 
 # Target subreddits for Reddit Story format
 STORY_SUBREDDITS = [
@@ -41,7 +33,7 @@ STORY_SUBREDDITS = [
 
 
 def _get_headers() -> dict[str, str]:
-    return {"User-Agent": random.choice(_USER_AGENTS)}
+    return {"User-Agent": random_ua()}
 
 
 # ---------------------------------------------------------------------------
@@ -207,46 +199,19 @@ def save_trending_to_db(posts: list[dict], platform: str = "reddit") -> int:
 
     Returns the number of rows inserted/updated.
     """
-    import psycopg
+    from sovi.research.scrapers import save_trending_to_db as _save
 
-    if not posts:
-        return 0
-
-    # Map niche slugs to IDs
-    niche_ids: dict[str, str] = {}
-    count = 0
-
-    with psycopg.connect(settings.database_url) as conn:
-        with conn.cursor() as cur:
-            # Prefetch niche IDs
-            cur.execute("SELECT id, slug FROM niches")
-            for row in cur.fetchall():
-                niche_ids[row[1]] = str(row[0])
-
-            for post in posts:
-                niche_slug = post.get("niche_slug")
-                niche_id = niche_ids.get(niche_slug) if niche_slug else None
-
-                cur.execute(
-                    """INSERT INTO trending_topics
-                       (platform, topic_text, hashtag, trend_score, niche_id, detected_at, is_active)
-                       VALUES (%s, %s, %s, %s, %s, now(), TRUE)
-                       ON CONFLICT (platform, topic_text, niche_id)
-                       WHERE is_active = true
-                       DO UPDATE SET
-                           trend_score = GREATEST(trending_topics.trend_score, EXCLUDED.trend_score),
-                           detected_at = now()""",
-                    (
-                        platform,
-                        post["title"][:500],
-                        f"r/{post['subreddit']}",
-                        float(post["score"]),
-                        niche_id,
-                    ),
-                )
-                count += 1
-            conn.commit()
-    return count
+    # Normalize reddit post dicts to the shared schema
+    items = [
+        {
+            "topic_text": p["title"][:500],
+            "hashtag": f"r/{p['subreddit']}",
+            "trend_score": float(p["score"]),
+            "niche_slug": p.get("niche_slug"),
+        }
+        for p in posts
+    ]
+    return _save(items, platform)
 
 
 # ---------------------------------------------------------------------------
@@ -301,8 +266,6 @@ def praw_scrape_rising(subreddit_name: str, limit: int = 25) -> list[dict]:
 
 async def _main() -> None:
     """Run the Reddit scraper and store results."""
-    import asyncio
-
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
 
     logger.info("=== Reddit Research Scraper ===")

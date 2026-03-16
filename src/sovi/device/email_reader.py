@@ -16,7 +16,6 @@ from __future__ import annotations
 import logging
 import re
 import time
-from typing import Any
 
 from sovi import events
 from sovi.crypto import decrypt
@@ -136,6 +135,90 @@ def read_verification_code(
         wda.terminate_app(SAFARI)
 
 
+def _open_safari_to(wda: WDASession, url: str) -> None:
+    """Terminate Safari, relaunch, and navigate to *url*."""
+    wda.terminate_app(SAFARI)
+    time.sleep(1)
+    wda.launch_app(SAFARI)
+    time.sleep(2)
+    wda.open_url(url)
+    time.sleep(5)
+
+
+def _fill_field(wda: WDASession, predicate: str, text: str) -> None:
+    """Tap a field matching *predicate* and type *text* into it."""
+    el = wda.find_element("predicate string", predicate)
+    if el:
+        wda.element_click(el["ELEMENT"])
+        time.sleep(0.5)
+        wda.type_text(text)
+        time.sleep(1)
+
+
+def _click_button(wda: WDASession, labels: list[str]) -> None:
+    """Tap the first button whose name matches one of *labels*."""
+    for label in labels:
+        btn = wda.find_element("predicate string", f'name == "{label}"')
+        if btn:
+            wda.element_click(btn["ELEMENT"])
+            return
+
+
+def _fill_credentials(wda: WDASession, email: str, password: str) -> None:
+    """Fill the standard email + password fields visible on screen."""
+    _fill_field(wda, 'type == "XCUIElementTypeTextField"', email)
+    _fill_field(wda, 'type == "XCUIElementTypeSecureTextField"', password)
+
+
+def _pull_to_refresh(wda: WDASession) -> None:
+    """Perform a pull-down gesture to refresh the current page."""
+    size = wda.screen_size()
+    wda.swipe(
+        size["width"] // 2, 200,
+        size["width"] // 2, 500,
+        duration=0.3,
+    )
+
+
+def _poll_inbox(
+    wda: WDASession,
+    platform: str,
+    timeout: int,
+    poll_interval: int,
+    *,
+    scroll_and_rescan: bool = False,
+    pull_refresh: bool = False,
+) -> str | None:
+    """Poll the inbox for a verification code from *platform*.
+
+    Args:
+        scroll_and_rescan: After initial scan, scroll down and scan again before waiting.
+        pull_refresh: Pull-to-refresh between poll attempts.
+    """
+    senders = PLATFORM_SENDERS.get(platform, [platform])
+    deadline = time.time() + timeout
+
+    while time.time() < deadline:
+        code = _scan_inbox_elements(wda, senders)
+        if code:
+            return code
+
+        wda.swipe_up(duration=0.5)
+
+        if scroll_and_rescan:
+            time.sleep(2)
+            code = _scan_inbox_elements(wda, senders)
+            if code:
+                return code
+
+        if pull_refresh:
+            _pull_to_refresh(wda)
+
+        time.sleep(poll_interval)
+
+    return None
+
+
 def _read_protonmail(
     wda: WDASession,
     email: str,
@@ -145,21 +228,14 @@ def _read_protonmail(
     poll_interval: int,
 ) -> str | None:
     """Read verification code from ProtonMail web interface."""
-    # Open ProtonMail login
-    wda.terminate_app(SAFARI)
-    time.sleep(1)
-    wda.launch_app(SAFARI)
-    time.sleep(2)
-    wda.open_url("https://account.proton.me/login")
-    time.sleep(5)
+    _open_safari_to(wda, "https://account.proton.me/login")
 
-    # Enter email
+    # ProtonMail has a more specific email field
     email_field = wda.find_element(
         "predicate string",
         'type == "XCUIElementTypeTextField" AND (name CONTAINS "Email" OR name CONTAINS "email")',
     )
     if not email_field:
-        # Try generic text field
         email_field = wda.find_element(
             "predicate string", 'type == "XCUIElementTypeTextField"',
         )
@@ -169,52 +245,12 @@ def _read_protonmail(
         wda.type_text(email)
         time.sleep(1)
 
-    # Enter password
-    pw_field = wda.find_element(
-        "predicate string", 'type == "XCUIElementTypeSecureTextField"',
-    )
-    if pw_field:
-        wda.element_click(pw_field["ELEMENT"])
-        time.sleep(0.5)
-        wda.type_text(password)
-        time.sleep(1)
-
-    # Click sign in
-    for label in ["Sign in", "Log in"]:
-        btn = wda.find_element("predicate string", f'name == "{label}"')
-        if btn:
-            wda.element_click(btn["ELEMENT"])
-            break
+    _fill_field(wda, 'type == "XCUIElementTypeSecureTextField"', password)
+    _click_button(wda, ["Sign in", "Log in"])
     time.sleep(8)  # ProtonMail login is slow
 
-    # Wait for inbox and search for platform email
-    senders = PLATFORM_SENDERS.get(platform, [platform])
-    deadline = time.time() + timeout
-
-    while time.time() < deadline:
-        # Look for message matching platform sender in visible elements
-        code = _scan_inbox_elements(wda, senders)
-        if code:
-            return code
-
-        # Try scrolling inbox
-        wda.swipe_up(duration=0.5)
-        time.sleep(2)
-
-        code = _scan_inbox_elements(wda, senders)
-        if code:
-            return code
-
-        # Refresh — pull down
-        size = wda.screen_size()
-        wda.swipe(
-            size["width"] // 2, 200,
-            size["width"] // 2, 500,
-            duration=0.3,
-        )
-        time.sleep(poll_interval)
-
-    return None
+    return _poll_inbox(wda, platform, timeout, poll_interval,
+                       scroll_and_rescan=True, pull_refresh=True)
 
 
 def _read_outlook(
@@ -226,46 +262,15 @@ def _read_outlook(
     poll_interval: int,
 ) -> str | None:
     """Read verification code from Outlook web interface."""
-    wda.terminate_app(SAFARI)
-    time.sleep(1)
-    wda.launch_app(SAFARI)
-    time.sleep(2)
-    wda.open_url("https://outlook.live.com/mail/")
-    time.sleep(5)
+    _open_safari_to(wda, "https://outlook.live.com/mail/")
 
-    # Login flow — Outlook has multi-step login
-    email_field = wda.find_element(
-        "predicate string", 'type == "XCUIElementTypeTextField"',
-    )
-    if email_field:
-        wda.element_click(email_field["ELEMENT"])
-        time.sleep(0.5)
-        wda.type_text(email)
-        time.sleep(1)
-
-    # Click Next
-    for label in ["Next", "next", "Sign in"]:
-        btn = wda.find_element("predicate string", f'name == "{label}"')
-        if btn:
-            wda.element_click(btn["ELEMENT"])
-            break
+    # Outlook has multi-step login
+    _fill_field(wda, 'type == "XCUIElementTypeTextField"', email)
+    _click_button(wda, ["Next", "next", "Sign in"])
     time.sleep(3)
 
-    # Password
-    pw_field = wda.find_element(
-        "predicate string", 'type == "XCUIElementTypeSecureTextField"',
-    )
-    if pw_field:
-        wda.element_click(pw_field["ELEMENT"])
-        time.sleep(0.5)
-        wda.type_text(password)
-        time.sleep(1)
-
-    for label in ["Sign in", "Next"]:
-        btn = wda.find_element("predicate string", f'name == "{label}"')
-        if btn:
-            wda.element_click(btn["ELEMENT"])
-            break
+    _fill_field(wda, 'type == "XCUIElementTypeSecureTextField"', password)
+    _click_button(wda, ["Sign in", "Next"])
     time.sleep(5)
 
     # Dismiss "Stay signed in?" dialog
@@ -274,19 +279,7 @@ def _read_outlook(
         wda.element_click(no_btn["ELEMENT"])
         time.sleep(3)
 
-    # Search inbox
-    senders = PLATFORM_SENDERS.get(platform, [platform])
-    deadline = time.time() + timeout
-
-    while time.time() < deadline:
-        code = _scan_inbox_elements(wda, senders)
-        if code:
-            return code
-
-        wda.swipe_up(duration=0.5)
-        time.sleep(poll_interval)
-
-    return None
+    return _poll_inbox(wda, platform, timeout, poll_interval)
 
 
 def _read_mailtm(
@@ -298,61 +291,22 @@ def _read_mailtm(
     poll_interval: int,
 ) -> str | None:
     """Read verification code from mail.tm web interface."""
-    wda.terminate_app(SAFARI)
-    time.sleep(1)
-    wda.launch_app(SAFARI)
-    time.sleep(2)
-    wda.open_url("https://mail.tm/en/")
-    time.sleep(5)
+    _open_safari_to(wda, "https://mail.tm/en/")
 
-    # Login
+    # Click initial "Log in" link to open login form
     login_btn = wda.find_element("predicate string", 'name CONTAINS "Log in"')
     if login_btn:
         wda.element_click(login_btn["ELEMENT"])
         time.sleep(2)
 
-    email_field = wda.find_element(
-        "predicate string", 'type == "XCUIElementTypeTextField"',
-    )
-    if email_field:
-        wda.element_click(email_field["ELEMENT"])
-        time.sleep(0.5)
-        wda.type_text(email)
-        time.sleep(1)
-
-    pw_field = wda.find_element(
-        "predicate string", 'type == "XCUIElementTypeSecureTextField"',
-    )
-    if pw_field:
-        wda.element_click(pw_field["ELEMENT"])
-        time.sleep(0.5)
-        wda.type_text(password)
-        time.sleep(1)
+    _fill_credentials(wda, email, password)
 
     submit = wda.find_element("predicate string", 'name CONTAINS "Log in"')
     if submit:
         wda.element_click(submit["ELEMENT"])
     time.sleep(5)
 
-    # Search inbox
-    senders = PLATFORM_SENDERS.get(platform, [platform])
-    deadline = time.time() + timeout
-
-    while time.time() < deadline:
-        code = _scan_inbox_elements(wda, senders)
-        if code:
-            return code
-
-        # Refresh — pull down to trigger inbox reload
-        size = wda.screen_size()
-        wda.swipe(
-            size["width"] // 2, 200,
-            size["width"] // 2, 500,
-            duration=0.3,
-        )
-        time.sleep(poll_interval)
-
-    return None
+    return _poll_inbox(wda, platform, timeout, poll_interval, pull_refresh=True)
 
 
 def _scan_inbox_elements(
