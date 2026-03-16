@@ -640,6 +640,7 @@ PLATFORM_WARMERS: dict[str, type[BaseWarmer]] = {
     "instagram": InstagramWarmer,
     "reddit": RedditWarmer,
     "youtube": YouTubeWarmer,
+    "youtube_shorts": YouTubeWarmer,
     "twitter": XTwitterWarmer,
     "x_twitter": XTwitterWarmer,
 }
