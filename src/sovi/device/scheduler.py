@@ -194,7 +194,13 @@ class DeviceScheduler:
 
                 # Wait for WDA to be responsive
                 dt.current_task = "waiting_for_wda"
-                if not self._wait_for_wda(device):
+                wda_state = self._wait_for_wda(device)
+                if wda_state is None:
+                    dt.current_task = "wda_busy"
+                    logger.info("WDA busy on %s, retrying in 30s", device.name)
+                    self._stop_event.wait(30)
+                    continue
+                if not wda_state:
                     dt.current_task = "wda_unreachable"
                     dt.error = "WDA not responding"
                     events.emit("device", "critical", "device_disconnected",
@@ -320,6 +326,10 @@ class DeviceScheduler:
                     end_session(session_id, "skipped")
                 return
             outcome = "success" if skipped else "failed"
+        elif task["type"] == "create_persona_account":
+            outcome = "success" if self._execute_persona_account_creation(device, dt, task) else "failed"
+        elif task["type"] == "create_email":
+            outcome = "success" if self._execute_email_creation(device, dt, task) else "failed"
 
         # End session log
         if session_id:
@@ -653,11 +663,12 @@ class DeviceScheduler:
         device: WDADevice,
         dt: DeviceThread,
         task: dict[str, Any],
-    ) -> None:
+    ) -> bool:
         """Execute an email creation task for a persona."""
         persona = task["persona"]
         persona_name = persona.get("display_name", "?")
         device_id = dt.device_id
+        success = False
         dt.current_task = f"creating_email:{persona_name}"
 
         events.emit("scheduler", "info", "email_creation_started",
@@ -680,6 +691,7 @@ class DeviceScheduler:
                             device_id=device_id,
                             context={"persona_id": str(persona["id"]),
                                      "email_account_id": str(result["id"])})
+                success = True
             else:
                 events.emit("scheduler", "error", "email_creation_failed",
                             f"Failed to create email for {persona_name}",
@@ -698,17 +710,20 @@ class DeviceScheduler:
             dt.current_account = None
             time.sleep(2)
 
+        return success
+
     def _execute_persona_account_creation(
         self,
         device: WDADevice,
         dt: DeviceThread,
         task: dict[str, Any],
-    ) -> None:
+    ) -> bool:
         """Execute a platform account creation task for a persona."""
         persona = task["persona"]
         platform = task["platform"]
         persona_name = persona.get("display_name", "?")
         device_id = dt.device_id
+        success = False
         dt.current_task = f"creating_account:{platform}/{persona_name}"
 
         events.emit("scheduler", "info", "persona_account_creation_started",
@@ -745,6 +760,7 @@ class DeviceScheduler:
                             context={"persona_id": str(persona["persona_id"]),
                                      "platform": platform,
                                      "username": result.get("username")})
+                success = True
             else:
                 events.emit("scheduler", "error", "persona_account_creation_failed",
                             f"Failed to create {platform} account for {persona_name}",
@@ -759,6 +775,8 @@ class DeviceScheduler:
             session.disconnect()
             dt.current_account = None
             time.sleep(2)
+
+        return success
 
     def _execute_creation(
         self,
@@ -831,18 +849,25 @@ class DeviceScheduler:
         session.reset_to_home()
 
     @staticmethod
-    def _wait_for_wda(device: WDADevice, timeout: float = 30.0) -> bool:
-        """Wait for WDA to become responsive."""
+    def _wait_for_wda(device: WDADevice, timeout: float = 30.0) -> bool | None:
+        """Wait for WDA to become responsive.
+
+        Returns True when WDA is ready, None when it is reachable but busy,
+        and False when it appears unreachable.
+        """
         deadline = time.time() + timeout
+        saw_busy = False
         while time.time() < deadline:
             try:
                 resp = httpx.get(f"{device.base_url}/status", timeout=5.0)
                 if resp.status_code == 200 and resp.json().get("value", {}).get("ready"):
                     return True
+            except httpx.ReadTimeout:
+                saw_busy = True
             except Exception:
                 pass
             time.sleep(2)
-        return False
+        return None if saw_busy else False
 
 
 # ---------------------------------------------------------------------------

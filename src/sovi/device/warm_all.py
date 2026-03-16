@@ -117,15 +117,18 @@ def _log_warming_to_db(result: dict) -> None:
 def _wait_for_wda(device: WDADevice, timeout: float = 60.0) -> bool:
     """Wait for WDA to become responsive with a short timeout."""
     deadline = time.time() + timeout
+    saw_busy = False
     while time.time() < deadline:
         try:
             resp = httpx.get(f"{device.base_url}/status", timeout=5.0)
             if resp.status_code == 200 and resp.json().get("value", {}).get("ready"):
                 return True
+        except httpx.ReadTimeout:
+            saw_busy = True
         except Exception:
             pass
         time.sleep(2)
-    return False
+    return saw_busy
 
 
 def warm_device(device: WDADevice, platforms: list[str], phase: WarmingPhase, duration_min: int) -> list[dict]:

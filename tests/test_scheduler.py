@@ -6,6 +6,8 @@ import sys
 from types import ModuleType
 from unittest.mock import MagicMock, patch
 
+import httpx
+
 # Stub numpy before any sovi.device.seeder imports (pulled in by scheduler)
 if "numpy" not in sys.modules:
     _np = ModuleType("numpy")
@@ -445,6 +447,129 @@ class TestExecuteCreationNoop:
             with patch(_EVENTS_EMIT):
                 result = sched._execute_creation(device, dt, task)
             assert result is None, f"Expected None for {platform}, got {result}"
+
+
+class TestWarmerTaskDispatch:
+    def test_dispatches_persona_account_creation_tasks(self):
+        sched = _make_scheduler()
+        dt = _make_device_thread()
+
+        from sovi.device.wda_client import WDADevice
+
+        device = WDADevice(name="test", udid="abc123", wda_port=8100)
+        task = {
+            "type": "create_persona_account",
+            "platform": "tiktok",
+            "persona": {
+                "persona_id": "p-1",
+                "display_name": "Jane Doe",
+            },
+        }
+        report = MagicMock()
+        report.passed = True
+        report.to_dict.return_value = {}
+
+        with (
+            patch.object(sched, "_get_next_task", return_value=task),
+            patch("sovi.device.scheduler.run_pre_session_checks", return_value=report),
+            patch("sovi.device.scheduler.start_session", return_value="sess-1"),
+            patch("sovi.device.scheduler.end_session") as mock_end,
+            patch.object(sched, "_execute_persona_account_creation", return_value=True) as mock_exec,
+            patch.object(sched._stop_event, "wait"),
+            patch(_EVENTS_EMIT),
+        ):
+            sched._run_warmer_iteration(device, dt)
+
+        mock_exec.assert_called_once_with(device, dt, task)
+        mock_end.assert_called_once_with("sess-1", "success")
+
+    def test_dispatches_email_creation_tasks(self):
+        sched = _make_scheduler()
+        dt = _make_device_thread()
+
+        from sovi.device.wda_client import WDADevice
+
+        device = WDADevice(name="test", udid="abc123", wda_port=8100)
+        task = {
+            "type": "create_email",
+            "persona": {
+                "id": "p-2",
+                "display_name": "John Smith",
+            },
+        }
+        report = MagicMock()
+        report.passed = True
+        report.to_dict.return_value = {}
+
+        with (
+            patch.object(sched, "_get_next_task", return_value=task),
+            patch("sovi.device.scheduler.run_pre_session_checks", return_value=report),
+            patch("sovi.device.scheduler.start_session", return_value="sess-2"),
+            patch("sovi.device.scheduler.end_session") as mock_end,
+            patch.object(sched, "_execute_email_creation", return_value=True) as mock_exec,
+            patch.object(sched._stop_event, "wait"),
+            patch(_EVENTS_EMIT),
+        ):
+            sched._run_warmer_iteration(device, dt)
+
+        mock_exec.assert_called_once_with(device, dt, task)
+        mock_end.assert_called_once_with("sess-2", "success")
+
+
+class TestWaitForWda:
+    def test_read_timeout_is_treated_as_busy(self):
+        from sovi.device.wda_client import WDADevice
+
+        device = WDADevice(name="test", udid="abc123", wda_port=8100)
+
+        with (
+            patch("sovi.device.scheduler.httpx.get", side_effect=httpx.ReadTimeout("busy")),
+            patch("sovi.device.scheduler.time.time", side_effect=[0.0, 0.0, 1.0]),
+            patch("sovi.device.scheduler.time.sleep"),
+        ):
+            result = DeviceScheduler._wait_for_wda(device, timeout=0.5)
+
+        assert result is None
+
+    def test_connect_timeout_is_treated_as_unreachable(self):
+        from sovi.device.wda_client import WDADevice
+
+        device = WDADevice(name="test", udid="abc123", wda_port=8100)
+
+        with (
+            patch("sovi.device.scheduler.httpx.get", side_effect=httpx.ConnectTimeout("down")),
+            patch("sovi.device.scheduler.time.time", side_effect=[0.0, 0.0, 1.0]),
+            patch("sovi.device.scheduler.time.sleep"),
+        ):
+            result = DeviceScheduler._wait_for_wda(device, timeout=0.5)
+
+        assert result is False
+
+    def test_busy_wda_does_not_mark_device_disconnected(self):
+        sched = _make_scheduler()
+        dt = _make_device_thread(device_id="dev-1", device_name="test-phone")
+        device_row = {
+            "id": "dev-1",
+            "name": "test-phone",
+            "udid": "abc123",
+            "wda_port": 8100,
+        }
+
+        def stop_wait(_seconds):
+            sched._stop_event.set()
+            return True
+
+        with (
+            patch.object(sched, "_wait_for_wda", return_value=None),
+            patch("sovi.device.scheduler.update_heartbeat"),
+            patch("sovi.device.scheduler.set_device_status") as mock_set_status,
+            patch(_EVENTS_EMIT) as mock_emit,
+            patch.object(sched._stop_event, "wait", side_effect=stop_wait),
+        ):
+            sched._device_loop(device_row, dt)
+
+        mock_set_status.assert_not_called()
+        assert not any(call.args[2] == "device_disconnected" for call in mock_emit.call_args_list)
 
 
 # --- Phase mapping ---
