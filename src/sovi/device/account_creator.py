@@ -22,7 +22,6 @@ from uuid import UUID
 from PIL import Image
 
 from sovi import events
-from sovi.auth import totp
 from sovi.auth.captcha_solver import detect_captcha_popup, solve_puzzle_local, solve_slide
 # TODO: Replace with on-device email_reader.py
 def _poll_stub(*args, **kwargs):
@@ -295,10 +294,11 @@ def create_account(
                     context={"platform": platform, "username": username, "step": "signup"})
         return None
 
-    # Step 8: Generate TOTP secret (enable 2FA later via settings)
-    totp_secret = totp.generate_secret()
+    # TODO: TOTP enrollment should happen via platform settings when 2FA is
+    # actually enabled. Generating a secret here is premature — the platform
+    # doesn't know about it yet, so codes derived from it would be invalid.
 
-    # Step 9: Store in DB
+    # Step 8: Store in DB
     rows = sync_execute(
         """INSERT INTO accounts
            (platform, username, email_enc, password_enc, totp_secret_enc,
@@ -310,7 +310,7 @@ def create_account(
             username,
             encrypt(email),
             encrypt(password),
-            encrypt(totp_secret),
+            None,
             str(niche_id),
             device_id,
         ),

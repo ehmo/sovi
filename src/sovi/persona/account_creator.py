@@ -183,10 +183,11 @@ def _store_account(
     device_id: str | None,
 ) -> dict | None:
     """Store a newly created account in the DB."""
-    from sovi.auth.totp import generate_secret
     from sovi.crypto import encrypt
 
-    totp_secret = generate_secret()
+    # TODO: TOTP enrollment should happen via platform settings when 2FA is
+    # actually enabled. Generating a secret here is premature — the platform
+    # doesn't know about it yet, so codes derived from it would be invalid.
     niche_id = str(persona["niche_id"])
 
     rows = sync_execute(
@@ -198,7 +199,7 @@ def _store_account(
         (
             platform, username,
             encrypt(email), encrypt(password),
-            encrypt(totp_secret),
+            None,
             niche_id, device_id,
         ),
     )
