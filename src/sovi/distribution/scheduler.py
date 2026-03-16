@@ -16,15 +16,6 @@ PLATFORM_SCHEDULE = {
     Platform.REDDIT: {"hour": 7, "day_offset": 3},       # Day 3, 7 AM weekday
 }
 
-# Max posts per day per account before diminishing returns
-DAILY_LIMITS = {
-    Platform.TIKTOK: 2,
-    Platform.INSTAGRAM: 2,
-    Platform.YOUTUBE: 1,
-    Platform.REDDIT: 2,
-    Platform.TWITTER: 5,
-}
-
 
 def schedule_distribution(
     content_id: UUID,
