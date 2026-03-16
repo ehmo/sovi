@@ -355,8 +355,8 @@ class DeviceScheduler:
                                 ON a.id = dab.account_id
                                 AND dab.device_id = %s
                                 AND dab.unbound_at IS NULL
-                           WHERE a.current_state IN %s
-                             AND a.platform IN %s
+                           WHERE a.current_state = ANY(%s)
+                             AND a.platform = ANY(%s)
                              AND a.deleted_at IS NULL
                              AND (a.last_warmed_at IS NULL
                                   OR a.last_warmed_at < CURRENT_DATE)
@@ -373,9 +373,9 @@ class DeviceScheduler:
                            FOR UPDATE OF a SKIP LOCKED""",
                         (
                             device_id,
-                            (AccountState.CREATED, AccountState.WARMING_P1, AccountState.WARMING_P2,
-                             AccountState.WARMING_P3, AccountState.ACTIVE),
-                            WARMABLE_PLATFORMS,
+                            [AccountState.CREATED, AccountState.WARMING_P1, AccountState.WARMING_P2,
+                             AccountState.WARMING_P3, AccountState.ACTIVE],
+                            list(WARMABLE_PLATFORMS),
                             AccountState.CREATED, AccountState.WARMING_P1,
                             AccountState.WARMING_P2, AccountState.WARMING_P3,
                             AccountState.ACTIVE,
@@ -452,9 +452,9 @@ class DeviceScheduler:
                     cur.execute(
                         """SELECT platform, COUNT(*) as cnt
                            FROM accounts
-                           WHERE platform IN %s AND deleted_at IS NULL
+                           WHERE platform = ANY(%s) AND deleted_at IS NULL
                            GROUP BY platform""",
-                        (WARMABLE_PLATFORMS,),
+                        (list(WARMABLE_PLATFORMS),),
                     )
                     counts = {row["platform"]: row["cnt"] for row in cur.fetchall()}
                     conn.commit()
