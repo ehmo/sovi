@@ -145,15 +145,14 @@ def run_seeder_cycle(
     return result
 
 
-def _execute_email_creation(
-    wda: WDASession,
-    task: dict[str, Any],
-    device_id: str,
-    device_name: str,
-) -> dict[str, Any] | None:
-    """Create a ProtonMail email account on-device."""
-    persona = {
+def _persona_from_task(task: dict[str, Any]) -> dict[str, Any]:
+    """Build a persona dict from a seeder_task row.
+
+    Shared by email and account creation to avoid duplicating the field mapping.
+    """
+    return {
         "id": task["persona_id"],
+        "niche_id": task.get("niche_id"),
         "first_name": task.get("first_name", ""),
         "last_name": task.get("last_name", ""),
         "display_name": task.get("display_name", ""),
@@ -161,8 +160,20 @@ def _execute_email_creation(
         "gender": task.get("gender", ""),
         "date_of_birth": str(task.get("date_of_birth", "")),
         "age": task.get("age", 28),
+        "bio_short": task.get("bio_short", ""),
+        "occupation": task.get("occupation", ""),
+        "interests": task.get("interests", []),
     }
 
+
+def _execute_email_creation(
+    wda: WDASession,
+    task: dict[str, Any],
+    device_id: str,
+    device_name: str,
+) -> dict[str, Any] | None:
+    """Create a ProtonMail email account on-device."""
+    persona = _persona_from_task(task)
     result = create_protonmail_email(wda, persona, device_id=device_id)
     return result
 
@@ -179,20 +190,7 @@ def _execute_account_creation(
     """
     from sovi.persona.account_creator import create_account_for_persona
 
-    persona = {
-        "id": task["persona_id"],
-        "niche_id": task.get("niche_id"),
-        "first_name": task.get("first_name", ""),
-        "last_name": task.get("last_name", ""),
-        "display_name": task.get("display_name", ""),
-        "username_base": task.get("username_base", "user"),
-        "gender": task.get("gender", ""),
-        "date_of_birth": str(task.get("date_of_birth", "")),
-        "age": task.get("age", 28),
-        "bio_short": task.get("bio_short", ""),
-        "occupation": task.get("occupation", ""),
-        "interests": task.get("interests", []),
-    }
+    persona = _persona_from_task(task)
 
     platform = task["platform"]
 
@@ -249,15 +247,4 @@ def _bind_account_to_warmer(account_id: str, warmer_id: str, seeder_id: str) -> 
 
 def _reset_device(wda: WDASession) -> None:
     """Return device to clean state after seeder task."""
-    for bundle in ("com.apple.mobilesafari", "com.apple.AppStore",
-                    "com.zhiliaoapp.musically", "com.burbn.instagram"):
-        try:
-            wda.terminate_app(bundle)
-        except Exception:
-            pass
-    try:
-        wda.press_button("home")
-        time.sleep(0.5)
-        wda.press_button("home")
-    except Exception:
-        pass
+    wda.reset_to_home()

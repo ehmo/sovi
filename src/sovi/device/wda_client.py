@@ -356,6 +356,28 @@ class WDASession:
         """Close Safari cleanly."""
         self.terminate_app("com.apple.mobilesafari")
 
+    # --- Device reset (shared by scheduler + seeder) ---
+
+    def reset_to_home(self) -> None:
+        """Return device to a clean home screen state after a task.
+
+        Terminates common apps that may have been left open (App Store,
+        Safari, social apps) and presses Home twice to ensure we're on
+        the springboard. Swallows all errors — this is best-effort recovery.
+        """
+        for bundle in ("com.apple.AppStore", "com.apple.mobilesafari",
+                        "com.zhiliaoapp.musically", "com.burbn.instagram"):
+            try:
+                self.terminate_app(bundle)
+            except Exception:
+                pass
+        try:
+            self.press_button("home")
+            time.sleep(0.5)
+            self.press_button("home")
+        except Exception:
+            pass
+
     # --- WiFi enforcement (must be OFF — all traffic via cellular) ---
 
     def ensure_wifi_off(self) -> bool:

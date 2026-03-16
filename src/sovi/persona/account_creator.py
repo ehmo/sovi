@@ -8,6 +8,7 @@ random generation.
 from __future__ import annotations
 
 import logging
+import random
 import time
 from typing import Any
 
@@ -168,7 +169,6 @@ def _derive_username(persona: dict, platform: str) -> str:
 
     Adds random digits to avoid collisions on platforms with taken usernames.
     """
-    import random
     base = persona.get("username_base", "user123").replace(".", "_")
     suffix = str(random.randint(100, 9999))
     return base + suffix

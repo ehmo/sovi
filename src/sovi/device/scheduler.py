@@ -269,16 +269,8 @@ class DeviceScheduler:
         """Execute one warming iteration for a warmer device."""
         device_id = dt.device_id
 
-        # CRITICAL: Ensure WiFi is OFF — all traffic must be cellular/GSM
-        dt.current_task = "enforcing_wifi_off"
-        _session = WDASession(device)
-        try:
-            _session.connect()
-            _session.ensure_wifi_off()
-        except Exception:
-            logger.warning("Could not verify WiFi off for %s", device.name)
-        finally:
-            _session.disconnect()
+        # WiFi enforcement happens inside _execute_warming/_execute_creation
+        # before any network activity, so no need to pre-check here.
 
         # Get next warming task (device-affinity aware)
         dt.current_task = "selecting_task"
@@ -804,24 +796,8 @@ class DeviceScheduler:
 
     @staticmethod
     def _reset_device(session: WDASession) -> None:
-        """Return device to a clean home screen state after a task.
-
-        Terminates common apps that may have been left open (App Store,
-        Safari, social apps) and presses Home twice to ensure we're on
-        the springboard. Swallows all errors — this is best-effort recovery.
-        """
-        for bundle in ("com.apple.AppStore", "com.apple.mobilesafari",
-                        "com.zhiliaoapp.musically", "com.burbn.instagram"):
-            try:
-                session.terminate_app(bundle)
-            except Exception:
-                pass
-        try:
-            session.press_button("home")
-            time.sleep(0.5)
-            session.press_button("home")
-        except Exception:
-            pass
+        """Return device to a clean home screen state after a task."""
+        session.reset_to_home()
 
     @staticmethod
     def _wait_for_wda(device: WDADevice, timeout: float = 30.0) -> bool:
