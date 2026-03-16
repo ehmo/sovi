@@ -206,7 +206,7 @@ class TestSignupTiktok:
         with (
             patch("time.sleep"),
             patch("sovi.device.account_creator.events.emit"),
-            patch("sovi.device.account_creator.poll_for_code", return_value=None),
+            patch("sovi.device.account_creator._poll_stub", return_value=None),
             patch("sovi.device.account_creator.solve_slide", return_value=None),
         ):
             from sovi.device.account_creator import _signup_tiktok
