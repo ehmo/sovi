@@ -8,6 +8,7 @@ Sources (in priority order):
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import random
 import time
@@ -108,7 +109,7 @@ async def fetch_niche_tiktok_suggestions(niche_slug: str | None = None) -> list[
                             "niche_slug": slug,
                             "trend_score": 2.0,
                         })
-                time.sleep(random.uniform(0.3, 0.8))
+                await asyncio.sleep(random.uniform(0.3, 0.8))
 
     return results
 

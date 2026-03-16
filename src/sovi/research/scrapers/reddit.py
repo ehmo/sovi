@@ -184,11 +184,11 @@ async def scrape_niche_subreddits(niche_slug: str | None = None) -> list[dict]:
                         seen.add(post["id"])
 
                 logger.info("r/%s (%s): %d posts", name, slug, len(seen))
-                time.sleep(random.uniform(1.0, 2.0))
+                await asyncio.sleep(random.uniform(1.0, 2.0))
             except httpx.HTTPStatusError as e:
                 if e.response.status_code == 429:
                     logger.warning("Rate limited on r/%s, waiting 30s", name)
-                    time.sleep(30)
+                    await asyncio.sleep(30)
                 else:
                     logger.warning("HTTP %d on r/%s", e.response.status_code, name)
             except Exception:
