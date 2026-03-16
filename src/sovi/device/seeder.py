@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 import random
+import threading
 import time
 from typing import Any
 
@@ -46,6 +47,8 @@ def run_seeder_cycle(
     wda: WDASession,
     device_id: str,
     device_name: str,
+    *,
+    stop_event: threading.Event | None = None,
 ) -> dict[str, Any] | None:
     """Run one seeder cycle: claim task → execute → store result.
 
@@ -134,7 +137,10 @@ def run_seeder_cycle(
     if task_type == "create_email":
         cooldown += EMAIL_COOLDOWN_EXTRA
     logger.info("Seeder %s: cooldown %.0fs", device_name, cooldown)
-    time.sleep(cooldown)
+    if stop_event is not None:
+        stop_event.wait(cooldown)
+    else:
+        time.sleep(cooldown)
 
     return result
 

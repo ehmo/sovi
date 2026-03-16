@@ -246,7 +246,7 @@ class DeviceScheduler:
             dt.current_task = "enforcing_wifi_off"
             session.ensure_wifi_off()
 
-            result = run_seeder_cycle(session, dt.device_id, device.name)
+            result = run_seeder_cycle(session, dt.device_id, device.name, stop_event=self._stop_event)
             if result:
                 dt.sessions_today += 1
                 dt.last_session_at = datetime.now(timezone.utc)
