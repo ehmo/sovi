@@ -343,6 +343,13 @@ def _read_mailtm(
         if code:
             return code
 
+        # Refresh — pull down to trigger inbox reload
+        size = wda.screen_size()
+        wda.swipe(
+            size["width"] // 2, 200,
+            size["width"] // 2, 500,
+            duration=0.3,
+        )
         time.sleep(poll_interval)
 
     return None
