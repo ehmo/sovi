@@ -30,9 +30,9 @@ async def scan_niche_trends(niche_slug: str) -> list[TopicCandidate]:
 
     # TikTok trending hashtags
     try:
-        from sovi.research.scrapers.tiktok import fetch_trending_hashtags
+        from sovi.research.scrapers.tiktok import fetch_creative_center_hashtags
 
-        hashtags = await fetch_trending_hashtags()
+        hashtags = await fetch_creative_center_hashtags()
         niche_keywords = [p.lower() for p in config.get("content_pillars", [])]
 
         for h in hashtags:
