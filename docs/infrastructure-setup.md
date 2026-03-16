@@ -179,9 +179,10 @@ ssh studio "launchctl unload ~/Library/LaunchAgents/com.sovi.dashboard.plist && 
 4. Choose a WDA port (8100, 8101, 8102, ...)
 5. Register: `sovi devices add --name iPhone-X --udid ... --wda-port 810X`
 6. Generate plists: `sovi devices setup --name iPhone-X`
-7. Load services: `launchctl load ~/Library/LaunchAgents/com.sovi.iproxy-iphone-x.plist && launchctl load ~/Library/LaunchAgents/com.sovi.wda-iphone-x.plist`
-8. Sign into App Store on the device
-9. Verify: `curl http://localhost:810X/status`
+7. Build `WebDriverAgentRunner` once in Xcode for that phone so DerivedData exists
+8. Load services: `launchctl load ~/Library/LaunchAgents/com.sovi.iproxy-iphone-x.plist && launchctl load ~/Library/LaunchAgents/com.sovi.wda-iphone-x.plist`
+9. Sign into App Store on the device
+10. Verify: `curl http://localhost:810X/status`
 
 ## Troubleshooting
 

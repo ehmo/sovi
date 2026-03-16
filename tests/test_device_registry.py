@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from sovi.device.device_registry import (
+    generate_launchd_plists,
     get_active_devices,
     get_device_by_id,
     get_device_by_name,
@@ -196,3 +197,31 @@ class TestDeviceStatusUpdates:
         mock_exec.assert_called_once()
         params = mock_exec.call_args[0][1]
         assert "disconnected" in params
+
+
+class TestGenerateLaunchdPlists:
+    def test_wda_plist_uses_prebuilt_runner_mode(self, tmp_path):
+        device = {
+            "name": "iPhone-A",
+            "udid": "00008140-001975DC3678801C",
+            "wda_port": 8100,
+        }
+
+        with patch.dict(
+            "os.environ",
+            {
+                "SOVI_XCODEBUILD_PATH": "/usr/bin/xcodebuild",
+                "SOVI_WDA_PROJECT_PATH": "/tmp/WebDriverAgent.xcodeproj",
+                "SOVI_WDA_DERIVED_DATA_ROOT": "/tmp/DerivedData",
+            },
+            clear=False,
+        ):
+            paths = generate_launchd_plists(device, str(tmp_path))
+
+        assert len(paths) == 2
+        wda_plist = (tmp_path / "com.sovi.wda-iphone-a.plist").read_text()
+        assert "/usr/bin/xcodebuild" in wda_plist
+        assert "/tmp/WebDriverAgent.xcodeproj" in wda_plist
+        assert "/tmp/DerivedData/WDA-iphone-a" in wda_plist
+        assert "test-without-building" in wda_plist
+        assert "<key>WorkingDirectory</key>" in wda_plist

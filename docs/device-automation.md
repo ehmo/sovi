@@ -228,7 +228,7 @@ Mirrors sync API: `async_get_devices()`, `async_get_device()`, `async_register_d
 
 `generate_launchd_plists(device, output_dir)` creates two plists per device:
 1. `com.sovi.iproxy-{name}.plist` — iproxy tunnel (KeepAlive)
-2. `com.sovi.wda-{name}.plist` — WebDriverAgent xcodebuild test (KeepAlive)
+2. `com.sovi.wda-{name}.plist` — WebDriverAgent prebuilt runner (`xcodebuild test-without-building`) with per-device DerivedData (KeepAlive)
 
 ## Scheduler (`src/sovi/device/scheduler.py`)
 

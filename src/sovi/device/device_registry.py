@@ -17,6 +17,17 @@ from sovi.device.wda_client import WDADevice
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_XCODEBUILD_PATH = "/usr/bin/xcodebuild"
+DEFAULT_WDA_PROJECT_PATH = (
+    "~/.appium/node_modules/appium-xcuitest-driver/node_modules/"
+    "appium-webdriveragent/WebDriverAgent.xcodeproj"
+)
+LEGACY_WDA_PROJECT_PATH = (
+    "/opt/homebrew/lib/node_modules/appium/node_modules/"
+    "appium-webdriveragent/WebDriverAgent.xcodeproj"
+)
+DEFAULT_WDA_DERIVED_DATA_ROOT = "~/Library/Developer/Xcode/DerivedData"
+
 
 # ---------------------------------------------------------------------------
 # Sync helpers (for scheduler threads)
@@ -165,6 +176,27 @@ async def async_get_device_sessions(device_id: str, limit: int = 20) -> list[dic
 # ---------------------------------------------------------------------------
 
 
+def _xcodebuild_path() -> str:
+    return os.environ.get("SOVI_XCODEBUILD_PATH", DEFAULT_XCODEBUILD_PATH)
+
+
+def _wda_project_path() -> str:
+    override = os.environ.get("SOVI_WDA_PROJECT_PATH")
+    if override:
+        return override
+
+    appium3 = os.path.expanduser(DEFAULT_WDA_PROJECT_PATH)
+    if Path(appium3).exists():
+        return appium3
+
+    return LEGACY_WDA_PROJECT_PATH
+
+
+def _wda_derived_data_path(name: str) -> str:
+    root = os.environ.get("SOVI_WDA_DERIVED_DATA_ROOT", DEFAULT_WDA_DERIVED_DATA_ROOT)
+    return str(Path(os.path.expanduser(root)) / f"WDA-{name}")
+
+
 def generate_launchd_plists(device: dict[str, Any], output_dir: str | None = None) -> list[str]:
     """Generate iproxy + WDA launchd plist files for a device.
 
@@ -214,6 +246,9 @@ def generate_launchd_plists(device: dict[str, Any], output_dir: str | None = Non
 
     # WDA plist
     wda_label = f"com.sovi.wda-{name}"
+    wda_project_path = _wda_project_path()
+    xcodebuild_path = _xcodebuild_path()
+    derived_data_path = _wda_derived_data_path(name)
     wda_plist = f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -222,19 +257,23 @@ def generate_launchd_plists(device: dict[str, Any], output_dir: str | None = Non
     <string>{wda_label}</string>
     <key>ProgramArguments</key>
     <array>
-        <string>/opt/homebrew/bin/xcodebuild</string>
+        <string>{xcodebuild_path}</string>
         <string>-project</string>
-        <string>/opt/homebrew/lib/node_modules/appium/node_modules/appium-webdriveragent/WebDriverAgent.xcodeproj</string>
+        <string>{wda_project_path}</string>
         <string>-scheme</string>
         <string>WebDriverAgentRunner</string>
         <string>-destination</string>
         <string>id={udid}</string>
-        <string>test</string>
+        <string>-derivedDataPath</string>
+        <string>{derived_data_path}</string>
+        <string>test-without-building</string>
     </array>
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
     <true/>
+    <key>WorkingDirectory</key>
+    <string>{Path(wda_project_path).parent}</string>
     <key>StandardOutPath</key>
     <string>/tmp/{wda_label}.log</string>
     <key>StandardErrorPath</key>
