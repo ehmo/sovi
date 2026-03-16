@@ -61,7 +61,7 @@ def _log_warming_to_db(result: dict) -> None:
             with conn.cursor() as cur:
                 # Look up device ID
                 cur.execute(
-                    "SELECT id FROM devices WHERE label = %s",
+                    "SELECT id FROM devices WHERE name = %s",
                     (result.get("device"),),
                 )
                 device_row = cur.fetchone()
@@ -195,7 +195,7 @@ def main() -> None:
 
     for row in db_devices:
         device = to_wda_device(row)
-        device_name = row.get("name") or row.get("label", "")
+        device_name = row.get("name", "")
         platforms = DEVICE_ASSIGNMENTS.get(device_name, DEFAULT_PLATFORMS)
         result_holder: list[dict] = []
         all_results.append(result_holder)
