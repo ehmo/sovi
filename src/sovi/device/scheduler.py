@@ -389,12 +389,7 @@ class DeviceScheduler:
                     if row:
                         return {
                             "type": "warm",
-                            "account": dict(zip(
-                                ["id", "platform", "username", "current_state",
-                                 "warming_day_count", "email_enc", "password_enc",
-                                 "totp_secret_enc", "niche_id", "niche_slug"],
-                                row,
-                            )),
+                            "account": dict(row),
                         }
         except Exception:
             logger.error("Error getting next warming task", exc_info=True)
