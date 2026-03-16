@@ -421,17 +421,12 @@ def main():
 
         browser.close()
 
-    # Summary
+    # Summary (no credentials logged — only counts and persona IDs)
     logger.info("\n=== Summary ===")
     logger.info("Created: %d/%d", len(results), len(personas))
     logger.info("Failed: %d", len(failed))
-    for r in results:
-        logger.info("  %s", r["email"])
-
-    # Save results
-    with open("/tmp/email_accounts.json", "w") as f:
-        json.dump(results, f, indent=2)
-    logger.info("Results saved to /tmp/email_accounts.json")
+    created_persona_ids = [str(r["persona_id"]) for r in results]
+    logger.info("Created persona_ids: %s", created_persona_ids)
 
 
 if __name__ == "__main__":
