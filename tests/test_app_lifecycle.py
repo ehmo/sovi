@@ -235,7 +235,7 @@ class TestInstallFromAppStore:
             {"ELEMENT": "search-btn"},
             {"ELEMENT": "get-btn"},
         ]
-        wda.app_state.return_value = 1  # installed
+        wda.app_state.side_effect = [0, 1]  # pre-install: not installed, then installed
 
         auto_mock = MagicMock()
         with (
