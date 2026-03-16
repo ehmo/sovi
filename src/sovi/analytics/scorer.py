@@ -68,8 +68,8 @@ async def score_hooks(niche_slug: str | None = None, min_uses: int = 5) -> list[
 
     Returns list sorted by Thompson Sampling expected value (alpha / (alpha + beta)).
     """
-    conditions = ["h.is_active = true", f"h.times_used >= {min_uses}"]
-    params: list = []
+    conditions = ["h.is_active = true", "h.times_used >= %s"]
+    params: list = [min_uses]
 
     if niche_slug:
         conditions.append("(n.slug = %s OR h.niche_id IS NULL)")
