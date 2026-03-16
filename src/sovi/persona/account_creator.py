@@ -17,7 +17,7 @@ from sovi.crypto import decrypt
 from sovi.db import sync_execute, sync_execute_one
 from sovi.device.account_creator import create_account
 from sovi.device.wda_client import DeviceAutomation, WDASession
-from sovi.persona.email_creator import SAFARI_BUNDLE, close_safari, open_safari
+from sovi.persona.email_creator import SAFARI_BUNDLE, click_any, close_safari, open_safari
 
 logger = logging.getLogger(__name__)
 
@@ -164,8 +164,8 @@ def _create_web_account(
     return None
 
 
-def _derive_username(persona: dict, platform: str) -> str:
-    """Derive a platform-specific username from persona's username_base.
+def _derive_username(persona: dict) -> str:
+    """Derive a username from persona's username_base.
 
     Adds random digits to avoid collisions on platforms with taken usernames.
     """
@@ -288,7 +288,7 @@ def _signup_reddit(
     Multi-step: email → verify code → username/password → done.
     Uses mail.tm API to fetch verification codes.
     """
-    username = _derive_username(persona, "reddit")
+    username = _derive_username(persona)
 
     try:
         # Kill any existing Safari session to start fresh
@@ -341,7 +341,7 @@ def _signup_reddit(
         wda.type_text(email)
         time.sleep(1)
 
-        if not _click_any(wda, ["Continue", "Next"]):
+        if not click_any(wda, ["Continue", "Next"]):
             wda.tap(196, 706)
         time.sleep(4)
 
@@ -361,15 +361,15 @@ def _signup_reddit(
                 time.sleep(0.5)
                 wda.type_text(code)
                 time.sleep(1)
-                _click_any(wda, ["Continue", "Next"])
+                click_any(wda, ["Continue", "Next"])
                 time.sleep(4)
             else:
                 logger.warning("No verification code received — trying Skip")
-                _click_any(wda, ["Skip"])
+                click_any(wda, ["Skip"])
                 time.sleep(3)
         elif verify_field:
             logger.warning("Verification needed but no email_password — trying Skip")
-            _click_any(wda, ["Skip"])
+            click_any(wda, ["Skip"])
             time.sleep(3)
 
         # Step 3: Username + Password page
@@ -403,7 +403,7 @@ def _signup_reddit(
             time.sleep(1)
 
         # Submit
-        if not _click_any(wda, ["Continue", "Sign Up", "Sign up"]):
+        if not click_any(wda, ["Continue", "Sign Up", "Sign up"]):
             wda.tap(196, 706)
         time.sleep(5)
 
@@ -448,7 +448,7 @@ def _signup_youtube(
 
     Note: Google signup almost always requires phone verification.
     """
-    username = _derive_username(persona, "youtube_shorts")
+    username = _derive_username(persona)
 
     try:
         open_safari(wda, "https://accounts.google.com/signup")
@@ -473,7 +473,7 @@ def _signup_youtube(
             wda.element_value(last_field["ELEMENT"], persona["last_name"])
             auto.human_delay()
 
-        _click_any(wda, ["Next", "next"])
+        click_any(wda, ["Next", "next"])
         time.sleep(3)
 
         # DOB and gender
@@ -492,11 +492,11 @@ def _signup_youtube(
                 if year_field:
                     wda.element_value(year_field["ELEMENT"], parts[0])
 
-        _click_any(wda, ["Next", "next"])
+        click_any(wda, ["Next", "next"])
         time.sleep(3)
 
         # Choose "Create your own Gmail address"
-        _click_any(wda, ["Create your own Gmail address", "create your own"])
+        click_any(wda, ["Create your own Gmail address", "create your own"])
         time.sleep(2)
 
         # Gmail username
@@ -509,7 +509,7 @@ def _signup_youtube(
             wda.element_value(gmail_field["ELEMENT"], gmail_username)
             auto.human_delay()
 
-        _click_any(wda, ["Next", "next"])
+        click_any(wda, ["Next", "next"])
         time.sleep(3)
 
         # Password
@@ -523,7 +523,7 @@ def _signup_youtube(
                 wda.element_value(pw_fields[1]["ELEMENT"], password)  # Confirm
             auto.human_delay()
 
-        _click_any(wda, ["Next", "next"])
+        click_any(wda, ["Next", "next"])
         time.sleep(3)
 
         # Phone verification (almost always required)
@@ -536,7 +536,7 @@ def _signup_youtube(
             sms = request_number("google")
             if sms:
                 wda.element_value(phone_field["ELEMENT"], sms.phone_number)
-                _click_any(wda, ["Next", "next"])
+                click_any(wda, ["Next", "next"])
                 time.sleep(5)
 
                 code = wait_for_code(sms, timeout=120)
@@ -547,7 +547,7 @@ def _signup_youtube(
                     )
                     if code_field:
                         wda.element_value(code_field["ELEMENT"], code)
-                        _click_any(wda, ["Verify", "Next"])
+                        click_any(wda, ["Verify", "Next"])
                         time.sleep(3)
                 else:
                     cancel_verification(sms)
@@ -555,11 +555,11 @@ def _signup_youtube(
                     return None
 
         # Recovery email
-        _click_any(wda, ["Skip", "Not now", "Next"])
+        click_any(wda, ["Skip", "Not now", "Next"])
         time.sleep(3)
 
         # Agree to terms
-        _click_any(wda, ["I agree", "Agree", "Accept"])
+        click_any(wda, ["I agree", "Agree", "Accept"])
         time.sleep(5)
 
         auto.dismiss_popups(max_attempts=3)
@@ -582,7 +582,7 @@ def _signup_facebook(
     device_id: str | None,
 ) -> dict | None:
     """Facebook signup via Safari."""
-    username = _derive_username(persona, "facebook")
+    username = _derive_username(persona)
 
     try:
         open_safari(wda, "https://www.facebook.com/reg/")
@@ -650,7 +650,7 @@ def _signup_facebook(
             wda.element_click(gender_el["ELEMENT"])
             time.sleep(0.5)
 
-        _click_any(wda, ["Sign Up", "Sign up", "Create Account"])
+        click_any(wda, ["Sign Up", "Sign up", "Create Account"])
         time.sleep(5)
 
         auto.dismiss_popups(max_attempts=3)
@@ -673,7 +673,7 @@ def _signup_linkedin(
     device_id: str | None,
 ) -> dict | None:
     """LinkedIn signup via Safari."""
-    username = _derive_username(persona, "linkedin")
+    username = _derive_username(persona)
 
     try:
         open_safari(wda, "https://www.linkedin.com/signup")
@@ -698,7 +698,7 @@ def _signup_linkedin(
             wda.element_value(pw_field["ELEMENT"], password)
             auto.human_delay()
 
-        _click_any(wda, ["Agree & Join", "Join now", "Continue"])
+        click_any(wda, ["Agree & Join", "Join now", "Continue"])
         time.sleep(3)
 
         # First name
@@ -719,11 +719,11 @@ def _signup_linkedin(
             wda.element_value(last_field["ELEMENT"], persona["last_name"])
             auto.human_delay()
 
-        _click_any(wda, ["Continue", "Next"])
+        click_any(wda, ["Continue", "Next"])
         time.sleep(3)
 
         # Location / country — usually auto-detected
-        _click_any(wda, ["Continue", "Next"])
+        click_any(wda, ["Continue", "Next"])
         time.sleep(3)
 
         # Email verification
@@ -757,23 +757,6 @@ def _wait_for_element(
         time.sleep(2)
     logger.warning("Timed out waiting for %s", label)
     return None
-
-
-def _click_any(wda: WDASession, labels: list[str]) -> bool:
-    """Try to click an element with any of the given labels."""
-    for label in labels:
-        el = wda.find_element("accessibility id", label)
-        if el:
-            wda.element_click(el["ELEMENT"])
-            return True
-        el = wda.find_element(
-            "predicate string",
-            f'name == "{label}" OR label == "{label}"'
-        )
-        if el:
-            wda.element_click(el["ELEMENT"])
-            return True
-    return False
 
 
 def _set_dob_selects(wda: WDASession, month: int, day: int, year: int) -> None:
