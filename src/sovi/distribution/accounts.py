@@ -51,7 +51,7 @@ async def get_account_for_posting(platform: Platform, niche_slug: str) -> dict |
     return None
 
 
-async def record_post(account_id: UUID, platform: str) -> None:
+async def record_post(account_id: UUID) -> None:
     """Update account's last_post_at after a successful post."""
     await db.execute(
         "UPDATE accounts SET last_post_at = NOW() WHERE id = %s",
