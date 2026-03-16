@@ -63,6 +63,7 @@ async def store_hook_template(
     template: dict,
     niche_id: UUID | None = None,
     platform: str | None = None,
+    hook_text: str | None = None,
 ) -> UUID:
     """Store an extracted hook template in the database."""
     hook_id = uuid4()
@@ -73,7 +74,7 @@ async def store_hook_template(
            VALUES (%s, %s, %s, %s, %s, %s, %s, 1.0, 1.0)""",
         (
             str(hook_id),
-            template["template_text"],
+            hook_text or template.get("hook_text", ""),
             template["template_text"],
             template["category"],
             template.get("emotional_tone", ""),
