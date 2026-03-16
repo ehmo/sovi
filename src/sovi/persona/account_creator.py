@@ -415,6 +415,17 @@ def _signup_reddit(
             time.sleep(5)
 
         auto.dismiss_popups(max_attempts=3)
+
+        # Verify signup succeeded by checking for logged-in indicator
+        logged_in = wda.find_element(
+            "predicate string",
+            'name CONTAINS[c] "Expand user menu"',
+        )
+        if not logged_in:
+            logger.warning("Reddit signup verification failed — no logged-in indicator found")
+            close_safari(wda)
+            return None
+
         close_safari(wda)
 
         return _store_account(persona, "reddit", username, email, password, device_id)
