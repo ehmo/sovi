@@ -352,12 +352,16 @@ def install_from_app_store(
                     wda.element_click(cloud_btn.get("ELEMENT", ""))
 
         # Wait for install to complete
-        logger.info("Installing %s, waiting up to %ds...", app_name, timeout)
+        # Capture pre-install state so we detect a real state change.
+        # If delete_app failed the app is still at state >= 1; we must
+        # wait for the state to increase (e.g. 1→4 after fresh install).
+        pre_state = wda.app_state(bundle_id)
+        logger.info("Installing %s, waiting up to %ds... (pre_state=%s)", app_name, timeout, pre_state)
         deadline = time.time() + timeout
         while time.time() < deadline:
             # Check if app is now installed
             state = wda.app_state(bundle_id)
-            if state >= 1:  # 1 = not running but installed
+            if state >= 1 and state > pre_state:  # state increased → fresh install completed
                 logger.info("Successfully installed %s", app_name)
                 events.emit("device", "info", "app_installed",
                            f"Installed {platform} from App Store",
