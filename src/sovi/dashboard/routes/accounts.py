@@ -53,7 +53,7 @@ async def list_accounts(
 async def get_account(account_id: str):
     account = await execute_one(
         """SELECT a.*, n.name as niche_name, n.slug as niche_slug,
-                  d.name as device_name
+                  d.label as device_name
            FROM accounts a
            LEFT JOIN niches n ON a.niche_id = n.id
            LEFT JOIN devices d ON a.device_id = d.id
@@ -181,7 +181,7 @@ async def _list_accounts(
                    a.warming_day_count, a.followers, a.last_warmed_at,
                    a.last_activity_at, a.created_at,
                    n.name as niche_name, n.slug as niche_slug,
-                   d.name as device_name
+                   d.label as device_name
             FROM accounts a
             LEFT JOIN niches n ON a.niche_id = n.id
             LEFT JOIN devices d ON a.device_id = d.id
