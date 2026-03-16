@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Query, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
 
 from sovi.dashboard.app import templates
@@ -54,7 +54,7 @@ async def list_personas_api(
 async def get_persona_api(persona_id: str):
     persona = await _get_persona(persona_id)
     if not persona:
-        return {"error": "Persona not found"}
+        raise HTTPException(status_code=404, detail="Persona not found")
     return persona
 
 
