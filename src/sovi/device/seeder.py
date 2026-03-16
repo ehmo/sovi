@@ -162,7 +162,7 @@ def _persona_from_task(task: dict[str, Any]) -> dict[str, Any]:
         "age": task.get("age", 28),
         "bio_short": task.get("bio_short", ""),
         "occupation": task.get("occupation", ""),
-        "interests": task.get("interests", []),
+        "interests": task.get("interests") or [],
     }
 
 
