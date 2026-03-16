@@ -61,7 +61,7 @@ async def get_account(account_id: str):
         (account_id,),
     )
     if not account:
-        return {"error": "Account not found"}, 404
+        raise HTTPException(status_code=404, detail="Account not found")
 
     # Get recent events for this account
     events = await execute(
@@ -82,7 +82,7 @@ async def create_account(body: AccountCreate):
         "SELECT id FROM niches WHERE slug = %s", (body.niche_slug,)
     )
     if not niche:
-        return {"error": f"Niche not found: {body.niche_slug}"}, 400
+        raise HTTPException(status_code=400, detail=f"Niche not found: {body.niche_slug}")
 
     rows = await execute(
         """INSERT INTO accounts (platform, username, niche_id, current_state)
@@ -142,7 +142,7 @@ async def retry_login(account_id: str):
         (account_id,),
     )
     if not account:
-        return {"error": "Account not found"}, 404
+        raise HTTPException(status_code=404, detail="Account not found")
 
     await async_emit(
         "account", "info", "login_retry_requested",

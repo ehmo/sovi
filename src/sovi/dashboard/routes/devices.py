@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
@@ -44,7 +44,7 @@ async def list_devices():
 async def get_device(device_id: str):
     device = await async_get_device(device_id)
     if not device:
-        return {"error": "Device not found"}, 404
+        raise HTTPException(status_code=404, detail="Device not found")
     return device
 
 
