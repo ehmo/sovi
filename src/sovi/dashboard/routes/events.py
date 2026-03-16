@@ -75,22 +75,25 @@ async def stream_events():
 
     async def event_generator():
         last_id = 0
-        while True:
-            rows = await execute(
-                """SELECT id, timestamp, category, severity, event_type,
-                          device_id, account_id, message, context
-                   FROM system_events
-                   WHERE id > %s
-                   ORDER BY id
-                   LIMIT 20""",
-                (last_id,),
-            )
-            for row in rows:
-                last_id = row["id"]
-                data = json.dumps(row, default=_json_serial)
-                yield f"data: {data}\n\n"
+        try:
+            while True:
+                rows = await execute(
+                    """SELECT id, timestamp, category, severity, event_type,
+                              device_id, account_id, message, context
+                       FROM system_events
+                       WHERE id > %s
+                       ORDER BY id
+                       LIMIT 20""",
+                    (last_id,),
+                )
+                for row in rows:
+                    last_id = row["id"]
+                    data = json.dumps(row, default=_json_serial)
+                    yield f"data: {data}\n\n"
 
-            await asyncio.sleep(2)
+                await asyncio.sleep(2)
+        except asyncio.CancelledError:
+            return
 
     return StreamingResponse(
         event_generator(),
