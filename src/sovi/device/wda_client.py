@@ -514,8 +514,12 @@ class DeviceAutomation:
             if alert_text:
                 alert_str = str(alert_text) if not isinstance(alert_text, str) else alert_text
                 logger.info("Alert: %s", alert_str[:80])
-                # Accept tracking/notifications for warming (we want normal behavior)
-                if any(kw in alert_str.lower() for kw in ["allow", "notif", "track"]):
+                # Reject WiFi-related alerts — devices must stay cellular-only
+                alert_lower = alert_str.lower()
+                if any(kw in alert_lower for kw in ["wi-fi", "wifi", "wireless", "network"]):
+                    self.wda.dismiss_alert()  # "Don't Allow" / "Cancel" for WiFi
+                # Dismiss tracking/notifications (we want normal behavior)
+                elif any(kw in alert_lower for kw in ["allow", "notif", "track"]):
                     self.wda.dismiss_alert()  # "Don't Allow" for tracking
                 else:
                     self.wda.accept_alert()
