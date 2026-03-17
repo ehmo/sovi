@@ -3,7 +3,7 @@
 
 Uses studio browser for form filling + CaptchaFox solving.
 Uses phone cellular IP (via WebInspector) for API calls to bypass rate limiting.
-Rotates phone IP via airplane mode toggle between accounts.
+Rotates the carrier session via the hardened cellular-data reset flow.
 
 Usage: ssh studio 'cd ~/Work/ai/sovi && .venv/bin/python scripts/register_batch.py'
 """
@@ -12,22 +12,25 @@ import concurrent.futures
 import json
 import logging
 import os
+from pathlib import Path
 import random
 import sys
 import time
 import uuid
 
-sys.path.insert(0, "src")
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s", datefmt="%H:%M:%S")
 logger = logging.getLogger(__name__)
 
 from playwright.sync_api import sync_playwright
 from playwright_stealth import Stealth
+from sovi.device.wda_client import WDADevice, WDASession
 from sovi.persona.email_playwright import _solve_captchafox, _generate_password
 
 # Phone config
 UDID_B = "00008140-001975DC3678801C"
 WDA_B = "http://localhost:8100"
+PHONE_DEVICE = WDADevice(name="iPhone-A", udid=UDID_B, wda_port=8100)
 ACCOUNTS_PER_IP = 5  # Rotate IP after this many accounts
 
 
@@ -46,33 +49,21 @@ def get_personas():
 
 
 def rotate_phone_ip():
-    """Toggle airplane mode on the phone to get a fresh cellular IP."""
-    import requests
+    """Reset cellular data through the hardened WDA client to get a fresh carrier session."""
+    session = WDASession(PHONE_DEVICE)
     try:
-        # Open Control Center and toggle airplane mode
-        sid_resp = requests.post(f"{WDA_B}/session",
-            json={"capabilities": {"alwaysMatch": {"bundleId": "com.apple.Preferences"}}},
-            timeout=10)
-        sid = sid_resp.json()["value"]["sessionId"]
-        # Swipe down from top-right for Control Center
-        requests.post(f"{WDA_B}/session/{sid}/wda/swipe",
-            json={"fromX": 350, "fromY": 0, "toX": 350, "toY": 400, "duration": 0.3}, timeout=10)
-        time.sleep(1)
-        # Tap airplane mode icon (top-left of control center grid)
-        requests.post(f"{WDA_B}/session/{sid}/wda/tap", json={"x": 68, "y": 180}, timeout=10)
-        time.sleep(3)
-        # Toggle back off
-        requests.post(f"{WDA_B}/session/{sid}/wda/tap", json={"x": 68, "y": 180}, timeout=10)
-        time.sleep(8)  # Wait for cellular to reconnect
-        # Close control center
-        requests.post(f"{WDA_B}/session/{sid}/wda/swipe",
-            json={"fromX": 200, "fromY": 800, "toX": 200, "toY": 400, "duration": 0.3}, timeout=10)
-        time.sleep(1)
-        logger.info("Phone IP rotated via airplane mode toggle")
-        return True
+        session.connect()
+        ok = session.reset_cellular_data_connection()
+        if ok:
+            logger.info("Phone carrier session rotated via cellular-data reset")
+        else:
+            logger.warning("Failed to rotate phone carrier session")
+        return ok
     except Exception as e:
         logger.warning("Failed to rotate phone IP: %s", e)
         return False
+    finally:
+        session.disconnect()
 
 
 async def phone_api_call(api_url, headers_dict, body_dict):

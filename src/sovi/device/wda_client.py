@@ -630,6 +630,10 @@ class WDASession:
 
     def _set_control_center_toggle(self, toggle: str, *, desired_on: bool, attempts: int = 3) -> bool:
         """Set a Control Center toggle to a desired state and verify it."""
+        if toggle == "airplane" and desired_on:
+            logger.critical("Blocked request to enable airplane mode on %s", self.device.name)
+            return False
+
         for _ in range(attempts):
             try:
                 element, state = self._read_control_center_toggle_state(toggle)

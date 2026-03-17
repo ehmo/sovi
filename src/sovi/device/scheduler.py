@@ -16,6 +16,7 @@ Task priority:
 from __future__ import annotations
 
 import logging
+import os
 import random
 import threading
 import time
@@ -50,6 +51,13 @@ from sovi.device.roles import (
     is_in_cooldown,
     populate_seeder_tasks,
     recover_interrupted_seeder_tasks,
+)
+from sovi.device.runtime_guard import (
+    SchedulerInstanceLock,
+    SchedulerOwner,
+    build_scheduler_owner,
+    find_conflicting_scheduler_processes,
+    terminate_conflicting_scheduler_processes,
 )
 from sovi.device.seeder import run_seeder_cycle
 from sovi.device.warming import WarmingConfig, WarmingPhase, run_warming
@@ -94,6 +102,52 @@ class DeviceScheduler:
         self._stop_event = threading.Event()
         self._lock = threading.Lock()
         self._rotator = RoleRotator()
+        self._instance_lock = SchedulerInstanceLock()
+        self._owner: SchedulerOwner | None = None
+        self._runtime_conflicts: list[dict[str, Any]] = []
+        self._start_error: str | None = None
+
+    def guard_runtime_environment(self) -> bool:
+        """Terminate stale external scheduler wrappers and record survivors."""
+        conflicts = find_conflicting_scheduler_processes(current_pid=os.getpid())
+        if not conflicts:
+            self._runtime_conflicts = []
+            return True
+
+        for conflict in conflicts:
+            logger.warning(
+                "Found conflicting scheduler process pid=%s kind=%s cmd=%s",
+                conflict.pid,
+                conflict.kind,
+                conflict.command,
+            )
+
+        survivors = terminate_conflicting_scheduler_processes(conflicts)
+        terminated_pids = {conflict.pid for conflict in conflicts} - {conflict.pid for conflict in survivors}
+        for conflict in conflicts:
+            if conflict.pid in terminated_pids:
+                events.emit(
+                    "scheduler",
+                    "warning",
+                    "conflicting_scheduler_terminated",
+                    f"Terminated conflicting scheduler process {conflict.pid}",
+                    context=conflict.to_dict(),
+                )
+
+        self._runtime_conflicts = [conflict.to_dict() for conflict in survivors]
+        if survivors:
+            for conflict in survivors:
+                events.emit(
+                    "scheduler",
+                    "critical",
+                    "conflicting_scheduler_survived",
+                    f"Conflicting scheduler process {conflict.pid} is still running",
+                    context=conflict.to_dict(),
+                )
+            self._start_error = "conflicting_scheduler_processes"
+            return False
+
+        return True
 
     @staticmethod
     def _get_schedulable_devices() -> list[dict[str, Any]]:
@@ -108,78 +162,132 @@ class DeviceScheduler:
                ORDER BY name"""
         )
 
-    def start(self) -> None:
+    def start(self) -> bool:
         """Start scheduler threads for all active devices."""
-        # Block quarantined modules from being imported in device context
-        enforce_clean_room()
+        with self._lock:
+            if self.is_running:
+                self._start_error = None
+                logger.info("Scheduler already running")
+                return False
 
-        self._stop_event.clear()
-        devices = self._get_schedulable_devices()
+            # Block quarantined modules from being imported in device context.
+            enforce_clean_room()
 
-        if not devices:
-            logger.warning("No active devices found")
-            events.emit("scheduler", "warning", "no_devices",
-                       "Scheduler started but no active devices found")
-            return
+            self._stop_event.clear()
+            self._start_error = None
 
-        # Start role rotator (bootstraps roles on first run, rotates every 4-6h)
-        self._rotator.start()
+            if not self.guard_runtime_environment():
+                return False
 
-        # Any claimed/in-progress seeder tasks from a prior dashboard process
-        # are orphaned once this scheduler starts. Requeue them before claiming.
-        try:
-            recover_interrupted_seeder_tasks()
-        except Exception:
-            logger.error("Failed to recover interrupted seeder tasks", exc_info=True)
+            if not self._instance_lock.acquire():
+                self._start_error = "scheduler_lock_held"
+                events.emit(
+                    "scheduler",
+                    "error",
+                    "scheduler_lock_held",
+                    "Another scheduler owner already holds the singleton lock",
+                )
+                return False
 
-        try:
-            dedupe_open_seeder_tasks()
-        except Exception:
-            logger.error("Failed to dedupe open seeder tasks", exc_info=True)
+            self._owner = build_scheduler_owner()
+            started = False
+            try:
+                devices = self._get_schedulable_devices()
 
-        # Populate seeder task queue from pending personas
-        try:
-            populate_seeder_tasks()
-        except Exception:
-            logger.error("Failed to populate seeder tasks at startup", exc_info=True)
+                if not devices:
+                    logger.warning("No active devices found")
+                    self._start_error = "no_devices"
+                    events.emit(
+                        "scheduler",
+                        "warning",
+                        "no_devices",
+                        "Scheduler started but no active devices found",
+                    )
+                    return False
 
-        events.emit("scheduler", "info", "scheduler_started",
+                # Start role rotator (bootstraps roles on first run, rotates every 4-6h)
+                self._rotator.start()
+
+                # Any claimed/in-progress seeder tasks from a prior dashboard process
+                # are orphaned once this scheduler starts. Requeue them before claiming.
+                try:
+                    recover_interrupted_seeder_tasks()
+                except Exception:
+                    logger.error("Failed to recover interrupted seeder tasks", exc_info=True)
+
+                try:
+                    dedupe_open_seeder_tasks()
+                except Exception:
+                    logger.error("Failed to dedupe open seeder tasks", exc_info=True)
+
+                # Populate seeder task queue from pending personas
+                try:
+                    populate_seeder_tasks()
+                except Exception:
+                    logger.error("Failed to populate seeder tasks at startup", exc_info=True)
+
+                events.emit(
+                    "scheduler",
+                    "info",
+                    "scheduler_started",
                     f"Starting scheduler with {len(devices)} devices",
-                    context={"device_count": len(devices)})
+                    context={
+                        "device_count": len(devices),
+                        "owner": self._owner.to_dict(),
+                    },
+                )
 
-        for device_row in devices:
-            device_id = str(device_row["id"])
-            name = device_row["name"] or device_id[:8]
+                for device_row in devices:
+                    device_id = str(device_row["id"])
+                    name = device_row["name"] or device_id[:8]
 
-            dt = DeviceThread(device_id=device_id, device_name=name, running=True)
-            t = threading.Thread(
-                target=self._device_loop,
-                args=(device_row, dt),
-                name=f"scheduler-{name}",
-                daemon=True,
-            )
-            dt.thread = t
-            self._threads[device_id] = dt
-            t.start()
-            logger.info("Started scheduler thread for %s", name)
+                    dt = DeviceThread(device_id=device_id, device_name=name, running=True)
+                    t = threading.Thread(
+                        target=self._device_loop,
+                        args=(device_row, dt),
+                        name=f"scheduler-{name}",
+                        daemon=True,
+                    )
+                    dt.thread = t
+                    self._threads[device_id] = dt
+                    t.start()
+                    logger.info("Started scheduler thread for %s", name)
+
+                started = True
+                return True
+            finally:
+                if not started:
+                    self._threads.clear()
+                    self._owner = None
+                    self._instance_lock.release()
 
     def stop(self) -> None:
         """Gracefully stop all scheduler threads."""
-        logger.info("Stopping scheduler...")
-        self._stop_event.set()
-        self._rotator.stop()
+        with self._lock:
+            if not self._threads and self._owner is None and not self._instance_lock.held:
+                return
 
-        events.emit("scheduler", "info", "scheduler_stopping",
-                    "Scheduler stop requested")
+            logger.info("Stopping scheduler...")
+            self._stop_event.set()
+            self._rotator.stop()
 
-        for dt in self._threads.values():
-            dt.running = False
-            if dt.thread and dt.thread.is_alive():
-                dt.thread.join(timeout=30)
+            events.emit(
+                "scheduler",
+                "info",
+                "scheduler_stopping",
+                "Scheduler stop requested",
+                context={"owner": self._owner.to_dict() if self._owner else None},
+            )
 
-        self._threads.clear()
-        events.emit("scheduler", "info", "scheduler_stopped",
-                    "Scheduler stopped")
+            for dt in self._threads.values():
+                dt.running = False
+                if dt.thread and dt.thread.is_alive():
+                    dt.thread.join(timeout=30)
+
+            self._threads.clear()
+            self._instance_lock.release()
+            self._owner = None
+            events.emit("scheduler", "info", "scheduler_stopped", "Scheduler stopped")
 
     @property
     def is_running(self) -> bool:
@@ -222,6 +330,9 @@ class DeviceScheduler:
             "device_count": len(self._threads),
             "threads": thread_status,
             "sessions_per_day_target": settings.max_sessions_per_device_day,
+            "owner": self._owner.to_dict() if self._owner else None,
+            "runtime_conflicts": self._runtime_conflicts,
+            "start_error": self._start_error,
         }
 
     @staticmethod

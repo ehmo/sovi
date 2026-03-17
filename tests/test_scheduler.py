@@ -565,6 +565,26 @@ class TestSeederIteration:
 
 
 class TestNetworkGuard:
+    def test_status_includes_owner_and_runtime_conflicts(self):
+        sched = _make_scheduler()
+        sched._owner = MagicMock(
+            to_dict=MagicMock(
+                return_value={
+                    "instance_id": "owner-1",
+                    "pid": 123,
+                    "project_root": "/tmp/runtime",
+                }
+            )
+        )
+        sched._runtime_conflicts = [{"pid": 999, "kind": "legacy_wrapper", "command": "/tmp/run_scheduler.py"}]
+        sched._start_error = "scheduler_lock_held"
+
+        status = sched.status()
+
+        assert status["owner"]["instance_id"] == "owner-1"
+        assert status["runtime_conflicts"][0]["pid"] == 999
+        assert status["start_error"] == "scheduler_lock_held"
+
     def test_status_includes_nested_network_guard(self):
         sched = _make_scheduler()
         dt = _make_device_thread()

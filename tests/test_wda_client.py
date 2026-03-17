@@ -160,6 +160,16 @@ def test_set_control_center_toggle_reconnects_after_invalid_session():
     session.element_click.assert_called_once_with("toggle-1")
 
 
+def test_set_control_center_toggle_refuses_to_enable_airplane_mode():
+    session = _make_session()
+    session.element_click = MagicMock()
+
+    ok = session._set_control_center_toggle("airplane", desired_on=True)
+
+    assert ok is False
+    session.element_click.assert_not_called()
+
+
 def test_ensure_cellular_data_on_uses_control_center_toggle():
     session = _make_session()
     session._open_control_center = MagicMock(return_value=True)

@@ -271,7 +271,15 @@ def cmd_scheduler(args: argparse.Namespace) -> None:
             datefmt="%H:%M:%S",
         )
         sched = get_scheduler()
-        sched.start()
+        if not sched.start():
+            status = sched.status()
+            reason = status.get("start_error") or "unknown"
+            print(f"Scheduler did not start: {reason}")
+            if status.get("runtime_conflicts"):
+                print("Conflicting scheduler processes remain active:")
+                for conflict in status["runtime_conflicts"]:
+                    print(f"  pid={conflict['pid']} kind={conflict['kind']} cmd={conflict['command']}")
+            return
         print("Scheduler started. Press Ctrl+C to stop.")
         try:
             import time
@@ -288,6 +296,15 @@ def cmd_scheduler(args: argparse.Namespace) -> None:
         print(f"\nScheduler running: {status['running']}")
         print(f"Device threads: {status['device_count']}")
         print(f"Target: {status['sessions_per_day_target']} sessions/device/day")
+        if status.get("owner"):
+            owner = status["owner"]
+            print(f"Owner: pid={owner['pid']} root={owner['project_root']} sha={owner.get('git_sha') or 'unknown'}")
+        if status.get("start_error"):
+            print(f"Start error: {status['start_error']}")
+        if status.get("runtime_conflicts"):
+            print("Runtime conflicts:")
+            for conflict in status["runtime_conflicts"]:
+                print(f"  pid={conflict['pid']} kind={conflict['kind']} cmd={conflict['command']}")
         if status["threads"]:
             print(f"\n{'Device':<15} {'Task':<35} {'Sessions':>8} {'Alive':>6}")
             print("-" * 70)

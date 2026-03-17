@@ -108,6 +108,8 @@ class Settings(BaseSettings):
     device_network_reset_settle_seconds: int = 6
     device_network_probe_attempts: int = 4
     device_network_probe_wait_seconds: float = 5.0
+    scheduler_runtime_guard_enabled: bool = True
+    scheduler_runtime_guard_interval_seconds: int = 30
 
     # Paths
     output_dir: Path = Field(default_factory=lambda: PROJECT_ROOT / "output")

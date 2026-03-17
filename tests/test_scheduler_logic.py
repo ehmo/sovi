@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sys
 from types import ModuleType
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 # Stub numpy before scheduler imports seeder_email transitively.
 if "numpy" not in sys.modules:
@@ -190,6 +190,9 @@ def test_scheduler_start_recovers_interrupted_seeder_tasks():
 
     with (
         patch("sovi.device.scheduler.enforce_clean_room"),
+        patch.object(scheduler, "guard_runtime_environment", return_value=True),
+        patch.object(scheduler._instance_lock, "acquire", return_value=True),
+        patch("sovi.device.scheduler.build_scheduler_owner", return_value=MagicMock(to_dict=lambda: {"pid": 1})),
         patch("sovi.device.scheduler.sync_execute", return_value=[device_row]),
         patch.object(scheduler._rotator, "start"),
         patch("sovi.device.scheduler.recover_interrupted_seeder_tasks") as mock_recover,
@@ -223,6 +226,9 @@ def test_scheduler_start_falls_back_to_disconnected_devices_after_restart():
 
     with (
         patch("sovi.device.scheduler.enforce_clean_room"),
+        patch.object(scheduler, "guard_runtime_environment", return_value=True),
+        patch.object(scheduler._instance_lock, "acquire", return_value=True),
+        patch("sovi.device.scheduler.build_scheduler_owner", return_value=MagicMock(to_dict=lambda: {"pid": 1})),
         patch("sovi.device.scheduler.sync_execute", return_value=[device_row]) as mock_sync_execute,
         patch.object(scheduler._rotator, "start"),
         patch("sovi.device.scheduler.recover_interrupted_seeder_tasks"),
@@ -234,3 +240,31 @@ def test_scheduler_start_falls_back_to_disconnected_devices_after_restart():
 
     mock_sync_execute.assert_called_once()
     mock_thread.assert_called_once()
+
+
+def test_scheduler_start_rejects_runtime_conflicts():
+    scheduler = DeviceScheduler()
+
+    with (
+        patch("sovi.device.scheduler.enforce_clean_room"),
+        patch.object(scheduler, "guard_runtime_environment", return_value=False),
+        patch.object(scheduler._instance_lock, "acquire") as mock_lock,
+    ):
+        started = scheduler.start()
+
+    assert started is False
+    mock_lock.assert_not_called()
+
+
+def test_scheduler_start_rejects_when_singleton_lock_is_held():
+    scheduler = DeviceScheduler()
+
+    with (
+        patch("sovi.device.scheduler.enforce_clean_room"),
+        patch.object(scheduler, "guard_runtime_environment", return_value=True),
+        patch.object(scheduler._instance_lock, "acquire", return_value=False),
+    ):
+        started = scheduler.start()
+
+    assert started is False
+    assert scheduler.status()["start_error"] == "scheduler_lock_held"
