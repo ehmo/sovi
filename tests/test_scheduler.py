@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+from datetime import datetime, timezone
 from types import ModuleType
 from unittest.mock import MagicMock, patch
 
@@ -19,6 +20,7 @@ if "numpy" not in sys.modules:
     sys.modules["numpy"] = _np
 
 
+import sovi.device.scheduler as scheduler_module  # noqa: E402
 from sovi.device.scheduler import WARMABLE_PLATFORMS, DeviceScheduler, DeviceThread  # noqa: E402
 from sovi.device.warming import WarmingPhase  # noqa: E402
 from sovi.models import AccountState
@@ -297,7 +299,7 @@ class TestExecuteWarmingErrorDetection:
 
         device = WDADevice(name="test", udid="abc123", wda_port=8100)
         mock_session = MagicMock()
-        mock_session.ensure_cellular_only.return_value = False
+        mock_session.ensure_cellular_ready.return_value = False
 
         with (
             patch("sovi.device.scheduler.WDASession", return_value=mock_session),
@@ -328,7 +330,7 @@ class TestExecuteWarmingErrorDetection:
 
         device = WDADevice(name="test", udid="abc123", wda_port=8100)
         mock_session = MagicMock()
-        mock_session.ensure_cellular_only.return_value = True
+        mock_session.ensure_cellular_ready.return_value = True
 
         with (
             patch("sovi.device.scheduler.WDASession", return_value=mock_session),
@@ -475,7 +477,7 @@ class TestWarmerTaskDispatch:
             patch("sovi.device.scheduler.start_session", return_value="sess-1"),
             patch("sovi.device.scheduler.end_session") as mock_end,
             patch.object(sched, "_execute_persona_account_creation", return_value=True) as mock_exec,
-            patch.object(sched._stop_event, "wait"),
+            patch.object(sched, "_wait_with_network_guard"),
             patch(_EVENTS_EMIT),
         ):
             sched._run_warmer_iteration(device, dt)
@@ -507,7 +509,7 @@ class TestWarmerTaskDispatch:
             patch("sovi.device.scheduler.start_session", return_value="sess-2"),
             patch("sovi.device.scheduler.end_session") as mock_end,
             patch.object(sched, "_execute_email_creation", return_value=True) as mock_exec,
-            patch.object(sched._stop_event, "wait"),
+            patch.object(sched, "_wait_with_network_guard"),
             patch(_EVENTS_EMIT),
         ):
             sched._run_warmer_iteration(device, dt)
@@ -525,18 +527,18 @@ class TestSeederIteration:
 
         device = WDADevice(name="test", udid="abc123", wda_port=8100)
         mock_session = MagicMock()
-        mock_session.ensure_cellular_only.return_value = False
+        mock_session.ensure_cellular_ready.return_value = False
 
         with (
             patch("sovi.device.scheduler.WDASession", return_value=mock_session),
             patch("sovi.device.scheduler.run_seeder_cycle") as mock_run_cycle,
-            patch.object(sched._stop_event, "wait") as mock_wait,
+            patch.object(sched, "_wait_with_network_guard") as mock_wait,
             patch(_EVENTS_EMIT),
         ):
             sched._run_seeder_iteration(device, dt)
 
         mock_run_cycle.assert_not_called()
-        mock_wait.assert_called_once_with(60)
+        mock_wait.assert_called_once_with(device, dt, 60, task_label="paused:network_guard")
         assert dt.error == "cellular_enforcement_failed"
 
     def test_marks_seeder_as_executing_after_cellular_enforcement(self):
@@ -547,19 +549,118 @@ class TestSeederIteration:
 
         device = WDADevice(name="test", udid="abc123", wda_port=8100)
         mock_session = MagicMock()
-        mock_session.ensure_cellular_only.return_value = True
+        mock_session.ensure_cellular_ready.return_value = True
 
         def fake_run_cycle(*_args, **_kwargs):
             assert dt.current_task == "seeder:executing"
-            return None
+            return True
 
         with (
             patch("sovi.device.scheduler.WDASession", return_value=mock_session),
             patch("sovi.device.scheduler.run_seeder_cycle", side_effect=fake_run_cycle),
-            patch.object(sched._stop_event, "wait"),
+            patch.object(sched, "_wait_with_network_guard"),
             patch(_EVENTS_EMIT),
         ):
             sched._run_seeder_iteration(device, dt)
+
+
+class TestNetworkGuard:
+    def test_status_includes_nested_network_guard(self):
+        sched = _make_scheduler()
+        dt = _make_device_thread()
+        dt.running = True
+        now = datetime(2026, 3, 17, tzinfo=timezone.utc)
+        dt.network_guard_state = "healthy"
+        dt.network_guard_last_checked_at = now
+        dt.network_guard_last_recovered_at = now
+        dt.network_guard_last_error = None
+        dt.network_guard_consecutive_failures = 0
+        dt.network_guard_last_cellular_reset_at = now
+        sched._threads[dt.device_id] = dt
+
+        status = sched.status()
+        guard = status["threads"][dt.device_id]["network_guard"]
+
+        assert guard["state"] == "healthy"
+        assert guard["last_checked_at"] == now.isoformat()
+        assert guard["last_recovered_at"] == now.isoformat()
+        assert guard["last_error"] is None
+        assert guard["consecutive_failures"] == 0
+        assert guard["last_cellular_reset_at"] == now.isoformat()
+
+    def test_between_task_reset_recovers_network_guard(self):
+        sched = _make_scheduler()
+        dt = _make_device_thread()
+
+        from sovi.device.wda_client import WDADevice
+
+        device = WDADevice(name="test", udid="abc123", wda_port=8100)
+        mock_session = MagicMock()
+        mock_session.ensure_cellular_ready.return_value = False
+        mock_session.reset_cellular_data_connection.return_value = True
+
+        with (
+            patch("sovi.device.scheduler.WDASession", return_value=mock_session),
+            patch(_EVENTS_EMIT),
+        ):
+            healthy = sched._run_network_guard_check(device, dt, allow_cellular_reset=True)
+
+        assert healthy is True
+        mock_session.connect.assert_called_once()
+        mock_session.reset_cellular_data_connection.assert_called_once_with(
+            wait_off_seconds=60,
+            recovery_wait_s=6,
+            probe_attempts=4,
+            probe_wait_s=5.0,
+        )
+        mock_session.disconnect.assert_called_once()
+        assert dt.network_guard_state == "healthy"
+        assert dt.network_guard_consecutive_failures == 0
+        assert dt.network_guard_last_cellular_reset_at is not None
+
+    def test_reset_window_blocks_immediate_repeat_cellular_reset(self):
+        sched = _make_scheduler()
+        dt = _make_device_thread()
+        dt.network_guard_last_cellular_reset_at = datetime.now(timezone.utc)
+
+        from sovi.device.wda_client import WDADevice
+
+        device = WDADevice(name="test", udid="abc123", wda_port=8100)
+        mock_session = MagicMock()
+        mock_session.ensure_cellular_ready.return_value = False
+
+        with (
+            patch("sovi.device.scheduler.WDASession", return_value=mock_session),
+            patch.object(scheduler_module.settings, "device_network_reset_cooldown_seconds", 900),
+            patch(_EVENTS_EMIT),
+        ):
+            healthy = sched._run_network_guard_check(device, dt, allow_cellular_reset=True)
+
+        assert healthy is False
+        mock_session.reset_cellular_data_connection.assert_not_called()
+        assert dt.network_guard_state == "awaiting_reset_window"
+        assert dt.network_guard_last_error == "Carrier-ready cellular verification failed; reset window is cooling down"
+        assert dt.error == "network_guard_unhealthy"
+
+    def test_wait_with_network_guard_chunk_sleeps(self):
+        sched = _make_scheduler()
+        dt = _make_device_thread()
+
+        from sovi.device.wda_client import WDADevice
+
+        device = WDADevice(name="test", udid="abc123", wda_port=8100)
+        waits: list[float] = []
+
+        with (
+            patch.object(sched, "_run_network_guard_check", return_value=True) as mock_guard,
+            patch("sovi.device.scheduler.time.monotonic", side_effect=[0.0, 0.0, 7.0, 12.0]),
+            patch.object(scheduler_module.settings, "device_network_monitor_interval_seconds", 7),
+            patch.object(sched._stop_event, "wait", side_effect=lambda seconds: waits.append(seconds) or False),
+        ):
+            sched._wait_with_network_guard(device, dt, 12, task_label="idle")
+
+        assert waits == [7, 5]
+        assert mock_guard.call_count == 2
 
 
 class TestWaitForWda:
@@ -679,6 +780,7 @@ class TestWaitForWda:
 
         with (
             patch.object(sched, "_wait_for_wda", return_value=True),
+            patch.object(sched, "_run_network_guard_check", return_value=True),
             patch("sovi.device.scheduler.update_heartbeat") as mock_heartbeat,
             patch("sovi.device.scheduler.get_current_role", return_value=None),
             patch.object(sched._stop_event, "wait", side_effect=stop_wait),
@@ -686,6 +788,41 @@ class TestWaitForWda:
             sched._device_loop(device_row, dt)
 
         mock_heartbeat.assert_called_once_with("dev-1")
+
+    def test_unhealthy_network_guard_pauses_task_execution(self):
+        sched = _make_scheduler()
+        dt = _make_device_thread(device_id="dev-1", device_name="test-phone")
+        dt.running = True
+        device_row = {
+            "id": "dev-1",
+            "name": "test-phone",
+            "udid": "abc123",
+            "wda_port": 8100,
+        }
+        waits: list[int] = []
+
+        def record_wait(seconds):
+            waits.append(seconds)
+            return False
+
+        def stop_after_recovery(*_args, **_kwargs):
+            sched._stop_event.set()
+
+        with (
+            patch.object(sched, "_wait_for_wda", return_value=True),
+            patch("sovi.device.scheduler.update_heartbeat") as mock_heartbeat,
+            patch.object(sched, "_run_network_guard_check", side_effect=[False, True]) as mock_guard,
+            patch("sovi.device.scheduler.get_current_role", return_value="seeder"),
+            patch.object(sched, "_run_seeder_iteration", side_effect=stop_after_recovery) as mock_seeder,
+            patch.object(scheduler_module.settings, "device_network_monitor_unhealthy_wait_seconds", 15),
+            patch.object(sched._stop_event, "wait", side_effect=record_wait),
+        ):
+            sched._device_loop(device_row, dt)
+
+        assert mock_heartbeat.call_count == 1
+        assert mock_guard.call_count == 2
+        assert waits == [15]
+        mock_seeder.assert_called_once()
 
 # --- Phase mapping ---
 

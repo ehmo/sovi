@@ -99,6 +99,16 @@ class Settings(BaseSettings):
     max_cooldown_seconds: int = 900   # 15 min
     max_sessions_per_device_day: int = 24
 
+    # Device network monitor
+    device_network_monitor_enabled: bool = True
+    device_network_monitor_interval_seconds: int = 30
+    device_network_monitor_unhealthy_wait_seconds: int = 60
+    device_network_reset_cooldown_seconds: int = 900
+    device_network_reset_disabled_seconds: int = 60
+    device_network_reset_settle_seconds: int = 6
+    device_network_probe_attempts: int = 4
+    device_network_probe_wait_seconds: float = 5.0
+
     # Paths
     output_dir: Path = Field(default_factory=lambda: PROJECT_ROOT / "output")
     temp_dir: Path = Field(default_factory=lambda: PROJECT_ROOT / "temp")

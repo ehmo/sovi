@@ -30,7 +30,7 @@ Microsoft's Outlook.com is the best option at scale:
 
 **Creation flow on the phones:**
 ```
-1. Airplane mode toggle (fresh mobile IP)
+1. Cellular-data reset (fresh mobile IP)
 2. Open Safari via WDA
 3. Navigate to signup.live.com
 4. Fill signup form (name, username, password)
@@ -138,7 +138,7 @@ Phase 1: Email harvesting (run before account creation campaigns)
   For each needed email:
     1. Pick provider (weighted: 55% outlook, 25% mailcom, 20% custom)
     2. Pick domain within provider (round-robin mailcom domains, random custom)
-    3. Airplane mode toggle (fresh IP)
+    3. Cellular-data reset (fresh IP)
     4. Create email account on-device via Safari/WDA
     5. Store credentials encrypted in email_accounts table
     6. Mark as 'available'

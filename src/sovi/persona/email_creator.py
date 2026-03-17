@@ -115,7 +115,7 @@ def create_email_for_persona(
 ) -> dict | None:
     """Create an email account on-device for a persona.
 
-    1. Toggle airplane mode (fresh IP)
+    1. Reset cellular data between tasks for a fresh carrier session
     2. Open Safari, navigate to signup page
     3. Fill form with persona data
     4. Handle CAPTCHA or phone verification
@@ -147,10 +147,10 @@ def create_email_for_persona(
     )
 
     try:
-        # Step 0: Rotate IP
-        if not wda.toggle_airplane_mode():
+        # Step 0: Reset carrier session before signup
+        if not wda.reset_cellular_data_connection():
             events.emit("persona", "error", "cellular_enforcement_failed",
-                        f"Could not rotate to a cellular-only state for {email_address}",
+                        f"Could not reset to a cellular-only state for {email_address}",
                         device_id=device_id,
                         context={"provider": provider, "persona_id": persona_id})
             return None

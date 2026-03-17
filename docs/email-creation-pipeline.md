@@ -13,7 +13,7 @@ Phase 1: Build email inventory (run days/weeks before needed)
 Phase 2: Social account creator claims emails from inventory
 
 Pipeline per email:
-  airplane mode toggle (fresh IP)
+  cellular-data reset (fresh carrier session / IP)
     -> open Safari
     -> navigate to signup page
     -> fill form (name, username, password)
@@ -139,8 +139,8 @@ def create_outlook_account(wda, device_id=None):
     email = f"{username}@{domain}"
     password = generate_strong_password()
 
-    # 1. Airplane mode toggle — fresh IP
-    wda.toggle_airplane_mode()
+    # 1. Cellular-data reset — fresh carrier session / IP
+    wda.reset_cellular_data_connection()
 
     # 2. Open Safari to signup page
     wda.open_safari("https://signup.live.com/signup")
@@ -392,8 +392,8 @@ def create_mailcom_account(wda, target_domain=None, device_id=None):
     email = f"{username}@{domain}"
     password = generate_strong_password()
 
-    # 1. Airplane mode toggle
-    wda.toggle_airplane_mode()
+    # 1. Cellular-data reset
+    wda.reset_cellular_data_connection()
 
     # 2. Open signup page
     wda.open_safari("https://www.mail.com/int/")
@@ -746,7 +746,7 @@ If Microsoft locks an account right after creation (suspicious activity), mark i
 If CapSolver can't solve the CAPTCHA:
 1. Take a new screenshot and retry (CAPTCHA may have refreshed)
 2. If 2 failures, abandon this attempt
-3. Toggle airplane mode for fresh IP and try again later
+3. Reset cellular data for a fresh IP and try again later
 
 ### Safari State Recovery
 

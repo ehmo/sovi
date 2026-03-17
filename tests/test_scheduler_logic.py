@@ -190,7 +190,7 @@ def test_scheduler_start_recovers_interrupted_seeder_tasks():
 
     with (
         patch("sovi.device.scheduler.enforce_clean_room"),
-        patch("sovi.device.scheduler.get_active_devices", return_value=[device_row]),
+        patch("sovi.device.scheduler.sync_execute", return_value=[device_row]),
         patch.object(scheduler._rotator, "start"),
         patch("sovi.device.scheduler.recover_interrupted_seeder_tasks") as mock_recover,
         patch("sovi.device.scheduler.dedupe_open_seeder_tasks") as mock_dedupe,
@@ -202,4 +202,35 @@ def test_scheduler_start_recovers_interrupted_seeder_tasks():
     mock_recover.assert_called_once()
     mock_dedupe.assert_called_once()
     mock_populate.assert_called_once()
+    mock_thread.assert_called_once()
+
+
+def test_scheduler_start_falls_back_to_disconnected_devices_after_restart():
+    scheduler = DeviceScheduler()
+    device_row = {
+        "id": "dev-1",
+        "name": "iPhone-1",
+        "model": "iPhone 16",
+        "udid": "abc123",
+        "ios_version": "18.3",
+        "wda_port": 8100,
+        "status": "disconnected",
+        "current_role": "seeder",
+        "connected_since": None,
+        "role_changed_at": None,
+        "seeder_cooldown_until": None,
+    }
+
+    with (
+        patch("sovi.device.scheduler.enforce_clean_room"),
+        patch("sovi.device.scheduler.sync_execute", return_value=[device_row]) as mock_sync_execute,
+        patch.object(scheduler._rotator, "start"),
+        patch("sovi.device.scheduler.recover_interrupted_seeder_tasks"),
+        patch("sovi.device.scheduler.dedupe_open_seeder_tasks"),
+        patch("sovi.device.scheduler.populate_seeder_tasks"),
+        patch("sovi.device.scheduler.threading.Thread") as mock_thread,
+    ):
+        scheduler.start()
+
+    mock_sync_execute.assert_called_once()
     mock_thread.assert_called_once()

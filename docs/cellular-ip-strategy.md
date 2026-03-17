@@ -1,6 +1,6 @@
 # Cellular IP Strategy
 
-Replace proxy services with real cellular data plans on each iPhone. Mobile IPs from carrier CGNAT pools are inherently trusted by platforms (TikTok, Instagram are mobile-first apps). Toggling airplane mode assigns a new IP from the carrier's pool automatically.
+Replace proxy services with real cellular data plans on each iPhone. Mobile IPs from carrier CGNAT pools are inherently trusted by platforms (TikTok, Instagram are mobile-first apps). Cycling cellular data between tasks assigns a new IP from the carrier's pool automatically.
 
 ## Why Cellular Beats Proxies
 
@@ -8,8 +8,8 @@ Replace proxy services with real cellular data plans on each iPhone. Mobile IPs 
 |--------|-------------------|---------------|
 | IP trust level | Medium (detectable) | Highest (genuine mobile) |
 | Monthly cost (8 devices) | $300-500 | $200-240 |
-| IP rotation | API call / timed | Airplane mode toggle |
-| Complexity | Proxy config per device | SIM + airplane toggle |
+| IP rotation | API call / timed | Cellular-data reset |
+| Complexity | Proxy config per device | SIM + cellular-only guard |
 | Detection risk | Proxy ASN fingerprinting | None — indistinguishable from real user |
 
 ## Carrier Selection
@@ -62,18 +62,18 @@ When airplane mode is toggled off, the phone reconnects to the carrier tower and
 
 ### Implementation
 
-Airplane mode toggle is done via WDA by navigating Control Center:
+The runtime now uses cellular-data resets instead of airplane-mode rotation. Between tasks, Control Center is used to disable cellular data for 60 seconds, then restore it and prove the carrier path is back:
 
 ```
-[swipe down from top-right] -> [tap airplane icon] -> [wait 3s] -> [tap airplane icon again] -> [wait for connectivity]
+[swipe down from top-right] -> [tap cellular icon OFF] -> [wait 60s] -> [tap cellular icon ON] -> [wait for connectivity]
 ```
 
-This is now integrated into a hardened device preflight. Every task first proves the phone is in the expected radio state, and only account-creation flows perform IP rotation:
+This is integrated into a hardened device preflight and a continuous network guard. Every task first proves the phone is in the expected radio state, and only between-task reset windows are allowed to cycle the carrier session:
 
 ```
 Session N:
-  0. [verify airplane OFF + Wi-Fi OFF]
-  1. [optional airplane mode ON → OFF] → new IP
+  0. [verify airplane OFF + cellular ON + Wi-Fi OFF]
+  1. [optional cellular data OFF 60s → ON] → new carrier session / IP
   2. [delete app] → new IDFV
   3. [install app]
   4. [login account_X]
@@ -86,24 +86,28 @@ Each session gets: **new IP** + **new IDFV** = maximum isolation.
 
 Before any persona-facing task, verify the radio state in Control Center:
 1. Airplane mode is OFF
-2. Wi-Fi is OFF
-3. Only then proceed on cellular/GSM
+2. Cellular data is ON
+3. Wi-Fi is OFF
+4. A lightweight Safari probe succeeds over carrier data
 
-For IP rotation flows, do not assume success after tapping. The runtime must:
+For between-task reset flows, do not assume success after tapping. The runtime must:
 1. Verify airplane mode started OFF
-2. Turn airplane mode ON
-3. Turn airplane mode back OFF
-4. Re-check airplane OFF and Wi-Fi OFF before continuing
+2. Turn cellular data OFF
+3. Wait 60 seconds
+4. Turn cellular data back ON
+5. Re-check airplane OFF, cellular ON, and Wi-Fi OFF
+6. Prove the carrier path is reachable before continuing
 
 ### Timing Budget
 
 | Step | Duration |
 |------|----------|
-| Airplane mode ON | ~1s |
-| Wait | 3s |
-| Airplane mode OFF | ~1s |
-| Cellular reconnection | 3-8s |
-| **Total** | **~8-13s** |
+| Cellular data OFF | ~1s |
+| Wait | 60s |
+| Cellular data ON | ~1s |
+| Cellular reconnection | 3-10s |
+| Carrier probe | 4-10s |
+| **Total** | **~68-82s** |
 
 This fits within the existing 15-min overhead budget.
 
@@ -116,15 +120,17 @@ Scheduler Thread
     +-- 2. _wait_for_wda(device) — poll /status until ready
     +-- 3. _get_next_task(device_id) — SQL: FOR UPDATE SKIP LOCKED
     |
-    +-- 4. ensure_airplane_mode_off()     <-- hard guard
-    +-- 5. ensure_wifi_off()              <-- hard guard
-    +-- 6. toggle_airplane_mode(wda)?     <-- seeder/email rotation only
-    +-- 7. delete_app(wda, platform)      — IDFV isolation
-    +-- 8. install_from_app_store(wda, platform)
-    +-- 9. login_account(wda, account) — decrypt creds -> platform login
-    +-- 10. run_warming(wda, config) — 30 min of platform-specific behavior
-    +-- 11. UPDATE accounts SET last_warmed_at, warming_day_count, current_state
-    +-- 12. emit event -> system_events table
+    +-- 4. ensure_airplane_mode_off()             <-- hard guard
+    +-- 5. ensure_cellular_data_on()              <-- hard guard
+    +-- 6. ensure_wifi_off()                      <-- hard guard
+    +-- 7. probe_cellular_connectivity()          <-- hard guard
+    +-- 8. reset_cellular_data_connection()?      <-- seeder/email reset only
+    +-- 9. delete_app(wda, platform)              — IDFV isolation
+    +-- 10. install_from_app_store(wda, platform)
+    +-- 11. login_account(wda, account) — decrypt creds -> platform login
+    +-- 12. run_warming(wda, config) — 30 min of platform-specific behavior
+    +-- 13. UPDATE accounts SET last_warmed_at, warming_day_count, current_state
+    +-- 14. emit event -> system_events table
 ```
 
 ## Physical Setup
@@ -145,6 +151,6 @@ Scheduler Thread
 
 ### Important: Disable Wi-Fi
 
-All devices **must** have Wi-Fi disabled to ensure traffic routes through cellular. If Wi-Fi is on, the phone will prefer Wi-Fi and the airplane mode IP rotation won't work (Wi-Fi IP stays the same).
+All devices **must** have Wi-Fi disabled to ensure traffic routes through cellular. If Wi-Fi is on, the phone will prefer Wi-Fi and the carrier reset will not change the active network path.
 
-Do not rely on the toggle alone. The runtime now re-checks both airplane mode and Wi-Fi after rotation and aborts the task if it cannot prove the device is back on cellular-only networking.
+Do not rely on the toggle alone. The runtime now runs a continuous network guard during idle/cooldown windows, re-checks airplane mode, cellular data, and Wi-Fi before work, and aborts the task if it cannot prove the device is back on healthy cellular-only networking.

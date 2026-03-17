@@ -4,7 +4,7 @@ Seeder devices run this pipeline instead of the warmer pipeline.
 Each cycle:
 1. Claim a seeder_task (email or account creation)
 2. Verify airplane mode is off and Wi-Fi is off
-3. Rotate airplane mode safely for a fresh cellular IP when needed
+3. Reset cellular data safely for a fresh carrier session when needed
 4. Execute on-device (Safari for email, app for platform)
 5. Store result in DB
 6. Bind new account to a warmer device
@@ -259,21 +259,14 @@ def _execute_account_creation(
 
     platform = task["platform"]
 
-    # Rotate to a fresh cellular IP. Abort if the phone cannot be
-    # returned to airplane-off / Wi-Fi-off state.
-    if not wda.toggle_airplane_mode():
-        logger.error("Seeder %s: could not rotate to a safe cellular-only state", device_name)
+    # Reset cellular data between tasks so the phone returns to a proven
+    # carrier-ready cellular-only state before account creation.
+    if not wda.reset_cellular_data_connection():
+        logger.error("Seeder %s: could not reset to a safe cellular-only state", device_name)
         events.emit("scheduler", "error", "cellular_rotation_failed",
-                    f"Seeder {device_name}: could not rotate to a safe cellular-only state",
+                    f"Seeder {device_name}: could not reset to a safe cellular-only state",
                     device_id=device_id,
-                    context={"platform": platform, "step": "cellular_rotation"})
-        return None
-    if not wda.ensure_cellular_only():
-        logger.error("Seeder %s: post-rotation cellular-only verification failed", device_name)
-        events.emit("scheduler", "error", "cellular_rotation_failed",
-                    f"Seeder {device_name}: post-rotation cellular-only verification failed",
-                    device_id=device_id,
-                    context={"platform": platform, "step": "post_rotation_cellular_verification"})
+                    context={"platform": platform, "step": "cellular_reset"})
         return None
 
     result = create_account_for_persona(wda, persona, platform, device_id=device_id)

@@ -31,7 +31,6 @@ from sovi.db import sync_conn, sync_execute, sync_execute_one
 from sovi.device._clean_room import enforce as enforce_clean_room
 from sovi.device.app_lifecycle import delete_app, install_from_app_store, login_account, reset_idfa
 from sovi.device.device_registry import (
-    get_active_devices,
     set_device_status,
     to_wda_device,
     update_heartbeat,
@@ -79,6 +78,12 @@ class DeviceThread:
     last_session_at: datetime | None = None
     running: bool = False
     error: str | None = None
+    network_guard_state: str = "unknown"
+    network_guard_last_checked_at: datetime | None = None
+    network_guard_last_recovered_at: datetime | None = None
+    network_guard_last_error: str | None = None
+    network_guard_consecutive_failures: int = 0
+    network_guard_last_cellular_reset_at: datetime | None = None
 
 
 class DeviceScheduler:
@@ -90,13 +95,26 @@ class DeviceScheduler:
         self._lock = threading.Lock()
         self._rotator = RoleRotator()
 
+    @staticmethod
+    def _get_schedulable_devices() -> list[dict[str, Any]]:
+        """Return devices the scheduler should keep trying to manage across restarts."""
+        return sync_execute(
+            """SELECT id, name, model, udid, ios_version,
+                      wda_port, status, "current_role",
+                      connected_since,
+                      role_changed_at, seeder_cooldown_until
+               FROM devices
+               WHERE status IN ('active', 'disconnected', 'maintenance')
+               ORDER BY name"""
+        )
+
     def start(self) -> None:
         """Start scheduler threads for all active devices."""
         # Block quarantined modules from being imported in device context
         enforce_clean_room()
 
         self._stop_event.clear()
-        devices = get_active_devices()
+        devices = self._get_schedulable_devices()
 
         if not devices:
             logger.warning("No active devices found")
@@ -180,6 +198,23 @@ class DeviceScheduler:
                 "running": dt.running,
                 "alive": dt.thread.is_alive() if dt.thread else False,
                 "error": dt.error,
+                "network_guard": {
+                    "state": dt.network_guard_state,
+                    "last_checked_at": (
+                        dt.network_guard_last_checked_at.isoformat()
+                        if dt.network_guard_last_checked_at else None
+                    ),
+                    "last_recovered_at": (
+                        dt.network_guard_last_recovered_at.isoformat()
+                        if dt.network_guard_last_recovered_at else None
+                    ),
+                    "last_error": dt.network_guard_last_error,
+                    "consecutive_failures": dt.network_guard_consecutive_failures,
+                    "last_cellular_reset_at": (
+                        dt.network_guard_last_cellular_reset_at.isoformat()
+                        if dt.network_guard_last_cellular_reset_at else None
+                    ),
+                },
             }
 
         return {
@@ -188,6 +223,199 @@ class DeviceScheduler:
             "threads": thread_status,
             "sessions_per_day_target": settings.max_sessions_per_device_day,
         }
+
+    @staticmethod
+    def _set_network_guard_state(dt: DeviceThread, state: str) -> None:
+        dt.network_guard_state = state
+        dt.network_guard_last_checked_at = datetime.now(timezone.utc)
+
+    def _record_network_guard_failure(
+        self,
+        dt: DeviceThread,
+        *,
+        device: WDADevice,
+        error: str,
+        state: str = "unhealthy",
+    ) -> None:
+        previous_state = dt.network_guard_state
+        previous_error = dt.network_guard_last_error
+        self._set_network_guard_state(dt, state)
+        dt.network_guard_consecutive_failures += 1
+        dt.network_guard_last_error = error
+
+        if (
+            dt.network_guard_consecutive_failures == 1
+            or previous_state != state
+            or previous_error != error
+        ):
+            events.emit(
+                "device",
+                "error",
+                "network_guard_unhealthy",
+                f"Network guard unhealthy on {device.name}: {error}",
+                device_id=dt.device_id,
+                context={
+                    "device_name": device.name,
+                    "state": state,
+                    "error": error,
+                    "consecutive_failures": dt.network_guard_consecutive_failures,
+                },
+            )
+
+    def _record_network_guard_healthy(
+        self,
+        dt: DeviceThread,
+        *,
+        device: WDADevice,
+        state: str = "healthy",
+    ) -> None:
+        had_failures = dt.network_guard_consecutive_failures > 0
+        previous_state = dt.network_guard_state
+        self._set_network_guard_state(dt, state)
+        dt.network_guard_last_error = None
+        dt.network_guard_consecutive_failures = 0
+        if had_failures or dt.network_guard_last_recovered_at is None or previous_state != state:
+            dt.network_guard_last_recovered_at = dt.network_guard_last_checked_at
+        if dt.error == "network_guard_unhealthy":
+            dt.error = None
+        if had_failures:
+            events.emit(
+                "device",
+                "info",
+                "network_guard_recovered",
+                f"Network guard recovered on {device.name}",
+                device_id=dt.device_id,
+                context={
+                    "device_name": device.name,
+                    "state": state,
+                    "last_cellular_reset_at": (
+                        dt.network_guard_last_cellular_reset_at.isoformat()
+                        if dt.network_guard_last_cellular_reset_at else None
+                    ),
+                },
+            )
+
+    @staticmethod
+    def _can_reset_cellular(dt: DeviceThread) -> bool:
+        last_reset = dt.network_guard_last_cellular_reset_at
+        if last_reset is None:
+            return True
+        return (
+            datetime.now(timezone.utc) - last_reset
+        ).total_seconds() >= settings.device_network_reset_cooldown_seconds
+
+    def _run_network_guard_check(
+        self,
+        device: WDADevice,
+        dt: DeviceThread,
+        *,
+        allow_cellular_reset: bool,
+    ) -> bool:
+        """Continuously enforce carrier-ready cellular-only networking outside task execution."""
+        if not settings.device_network_monitor_enabled:
+            self._record_network_guard_healthy(dt, device=device, state="disabled")
+            return True
+
+        self._set_network_guard_state(dt, "checking")
+        session = WDASession(device)
+        try:
+            session.connect()
+        except Exception:
+            self._record_network_guard_failure(
+                dt,
+                device=device,
+                state="session_unavailable",
+                error="Could not create WDA session for network guard",
+            )
+            dt.error = "network_guard_unhealthy"
+            return False
+
+        try:
+            if session.ensure_cellular_ready(
+                probe_attempts=settings.device_network_probe_attempts,
+                probe_wait_s=settings.device_network_probe_wait_seconds,
+                cleanup=True,
+            ):
+                self._record_network_guard_healthy(dt, device=device)
+                return True
+
+            if allow_cellular_reset and self._can_reset_cellular(dt):
+                self._set_network_guard_state(dt, "resetting_cellular")
+                if session.reset_cellular_data_connection(
+                    wait_off_seconds=settings.device_network_reset_disabled_seconds,
+                    recovery_wait_s=settings.device_network_reset_settle_seconds,
+                    probe_attempts=settings.device_network_probe_attempts,
+                    probe_wait_s=settings.device_network_probe_wait_seconds,
+                ):
+                    dt.network_guard_last_cellular_reset_at = datetime.now(timezone.utc)
+                    self._record_network_guard_healthy(dt, device=device)
+                    return True
+                self._record_network_guard_failure(
+                    dt,
+                    device=device,
+                    state="reset_failed",
+                    error="Cellular reset failed to restore carrier-ready cellular-only state",
+                )
+                dt.error = "network_guard_unhealthy"
+                return False
+
+            failure_state = "awaiting_reset_window" if allow_cellular_reset else "unhealthy"
+            failure_error = (
+                "Carrier-ready cellular verification failed; reset window is cooling down"
+                if failure_state == "awaiting_reset_window"
+                else "Carrier-ready cellular verification failed"
+            )
+            self._record_network_guard_failure(
+                dt,
+                device=device,
+                state=failure_state,
+                error=failure_error,
+            )
+            dt.error = "network_guard_unhealthy"
+            return False
+        except Exception:
+            logger.error("Network guard check failed for %s", device.name, exc_info=True)
+            self._record_network_guard_failure(
+                dt,
+                device=device,
+                state="monitor_error",
+                error="Network guard check raised an exception",
+            )
+            dt.error = "network_guard_unhealthy"
+            return False
+        finally:
+            session.disconnect()
+
+    def _wait_with_network_guard(
+        self,
+        device: WDADevice,
+        dt: DeviceThread,
+        seconds: float,
+        *,
+        task_label: str,
+    ) -> None:
+        """Chunk sleeps so idle/cooldown periods continue guarding network health."""
+        if seconds <= 0:
+            return
+        if not settings.device_network_monitor_enabled:
+            dt.current_task = task_label
+            self._stop_event.wait(seconds)
+            return
+
+        deadline = time.monotonic() + seconds
+        while not self._stop_event.is_set():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return
+
+            dt.current_task = task_label
+            if not self._run_network_guard_check(device, dt, allow_cellular_reset=True):
+                pause = min(settings.device_network_monitor_unhealthy_wait_seconds, remaining)
+                if pause > 0:
+                    self._stop_event.wait(pause)
+                continue
+
+            self._stop_event.wait(min(settings.device_network_monitor_interval_seconds, remaining))
 
     def _enforce_cellular_only(
         self,
@@ -198,10 +426,21 @@ class DeviceScheduler:
         platform: str | None = None,
         account_id: str | None = None,
     ) -> bool:
-        """Ensure the device is using cellular-only networking before continuing."""
+        """Ensure the device is using carrier-ready cellular-only networking before continuing."""
         dt.current_task = f"enforcing_cellular_only:{device_name}"
-        if session.ensure_cellular_only():
+        if session.ensure_cellular_ready(
+            probe_attempts=settings.device_network_probe_attempts,
+            probe_wait_s=settings.device_network_probe_wait_seconds,
+            cleanup=True,
+        ):
+            self._record_network_guard_healthy(dt, device=session.device)
             return True
+
+        self._record_network_guard_failure(
+            dt,
+            device=session.device,
+            error="Carrier-ready cellular verification failed at task gate",
+        )
 
         context = {"device_name": device_name}
         if platform:
@@ -218,7 +457,7 @@ class DeviceScheduler:
             "scheduler",
             "error",
             "cellular_enforcement_failed",
-            f"Could not verify cellular-only state on {device_name}",
+            f"Could not verify carrier-ready cellular-only state on {device_name}",
             **emit_kwargs,
         )
         return False
@@ -228,6 +467,12 @@ class DeviceScheduler:
         diagnostic = diagnose_wda_failure(device.name)
         if diagnostic:
             dt.current_task = diagnostic.reason
+            self._record_network_guard_failure(
+                dt,
+                device=device,
+                state="wda_unreachable",
+                error=diagnostic.summary,
+            )
             dt.error = diagnostic.reason
             event_type = "device_setup_required" if diagnostic.manual_action_required else "device_disconnected"
             severity = "error" if diagnostic.manual_action_required else "critical"
@@ -253,6 +498,12 @@ class DeviceScheduler:
             return
 
         dt.current_task = "wda_unreachable"
+        self._record_network_guard_failure(
+            dt,
+            device=device,
+            state="wda_unreachable",
+            error="WDA not responding",
+        )
         dt.error = "WDA not responding"
         events.emit("device", "critical", "device_disconnected",
                    f"WDA not responding on {device.name}",
@@ -280,6 +531,7 @@ class DeviceScheduler:
                 wda_state = self._wait_for_wda(device)
                 if wda_state is None:
                     dt.current_task = "wda_busy"
+                    self._set_network_guard_state(dt, "wda_busy")
                     logger.info("WDA busy on %s, retrying in 30s", device.name)
                     self._stop_event.wait(30)
                     continue
@@ -287,7 +539,12 @@ class DeviceScheduler:
                     self._handle_wda_unreachable(device, dt)
                     continue
 
-                # Only heartbeat healthy devices.
+                if not self._run_network_guard_check(device, dt, allow_cellular_reset=True):
+                    dt.current_task = "paused:network_guard"
+                    self._stop_event.wait(settings.device_network_monitor_unhealthy_wait_seconds)
+                    continue
+
+                # Only heartbeat devices after network guard proves they are healthy.
                 update_heartbeat(device_id)
                 dt.error = None
 
@@ -301,13 +558,12 @@ class DeviceScheduler:
                     if is_in_cooldown(device_id):
                         dt.current_task = "seeder_cooldown"
                         logger.debug("%s in post-seeder cooldown, sleeping 60s", device.name)
-                        self._stop_event.wait(60)
+                        self._wait_with_network_guard(device, dt, 60, task_label="seeder_cooldown")
                         continue
                     self._run_warmer_iteration(device, dt)
                 else:
                     # Idle / unassigned — wait for role bootstrap
-                    dt.current_task = "idle:no_role"
-                    self._stop_event.wait(30)
+                    self._wait_with_network_guard(device, dt, 30, task_label="idle:no_role")
 
             except Exception:
                 dt.error = "Unhandled exception in device loop"
@@ -336,7 +592,12 @@ class DeviceScheduler:
             # CRITICAL: all persona-facing traffic must be cellular-only.
             if not self._enforce_cellular_only(session, dt, device_name=device.name):
                 dt.error = "cellular_enforcement_failed"
-                self._stop_event.wait(60)
+                self._wait_with_network_guard(
+                    device,
+                    dt,
+                    60,
+                    task_label="paused:network_guard",
+                )
                 return
 
             dt.current_task = "seeder:executing"
@@ -351,8 +612,7 @@ class DeviceScheduler:
                 dt.last_session_at = datetime.now(timezone.utc)
             else:
                 # No tasks available — short sleep before checking again
-                dt.current_task = "seeder:idle"
-                self._stop_event.wait(30)
+                self._wait_with_network_guard(device, dt, 30, task_label="seeder:idle")
         except Exception:
             logger.error("Seeder iteration failed for %s", device.name, exc_info=True)
             dt.error = "seeder_error"
@@ -368,16 +628,15 @@ class DeviceScheduler:
         """Execute one warming iteration for a warmer device."""
         device_id = dt.device_id
 
-        # WiFi enforcement happens inside _execute_warming/_execute_creation
-        # before any network activity, so no need to pre-check here.
+        # The background network guard keeps the device cellular-only between
+        # tasks; task-specific execution still re-validates before any traffic.
 
         # Get next warming task (device-affinity aware)
         dt.current_task = "selecting_task"
         task = self._get_next_task(device_id)
 
         if task is None:
-            dt.current_task = "idle"
-            self._stop_event.wait(30)
+            self._wait_with_network_guard(device, dt, 30, task_label="idle")
             return
 
         # Pre-session identity checks (skip proxy — cellular connection)
@@ -390,9 +649,8 @@ class DeviceScheduler:
 
         if not report.passed:
             wait = max(report.wait_seconds, 30)
-            dt.current_task = f"cooldown:{wait:.0f}s"
             logger.info("Pre-session rejected for %s, waiting %.0fs", device.name, wait)
-            self._stop_event.wait(wait)
+            self._wait_with_network_guard(device, dt, wait, task_label=f"cooldown:{wait:.0f}s")
             return
 
         # Session log (no proxy — all traffic is cellular)
@@ -433,7 +691,7 @@ class DeviceScheduler:
             settings.max_cooldown_seconds,
         ) + random.uniform(-120, 120)
         cooldown = max(cooldown, 60)  # floor at 1 min
-        self._stop_event.wait(cooldown)
+        self._wait_with_network_guard(device, dt, cooldown, task_label="cooldown")
 
     def _get_next_task(self, device_id: str) -> dict[str, Any] | None:
         """Determine the next task for a device.

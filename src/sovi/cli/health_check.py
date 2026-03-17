@@ -376,6 +376,17 @@ def check_scheduler() -> None:
             status = resp.json()
             if status.get("running"):
                 print(f"  {ok('Scheduler')}: {status.get('device_count', 0)} device threads")
+                threads = status.get("threads", {})
+                for thread in threads.values():
+                    guard = thread.get("network_guard") or {}
+                    device_name = thread.get("device_name", "?")
+                    task = thread.get("current_task", "idle")
+                    guard_state = guard.get("state", "unknown")
+                    guard_error = guard.get("last_error")
+                    line = f"    {device_name}: {task} | network_guard={guard_state}"
+                    if guard_error:
+                        line += f" | error={guard_error}"
+                    print(line)
             else:
                 print(f"  {DIM}Scheduler: not running{RESET}")
     except Exception:

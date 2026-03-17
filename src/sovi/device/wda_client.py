@@ -35,6 +35,15 @@ class WDADevice:
 class WDASession:
     """Session on a single WDA device."""
 
+    _CARRIER_PROBE_URL = "http://captive.apple.com/hotspot-detect.html"
+    _CARRIER_PROBE_SUCCESS_MARKERS = ("<title>success", "<body>success", ">success<")
+    _CARRIER_PROBE_FAILURE_MARKERS = (
+        "cannot open page",
+        "not connected to the internet",
+        "server stopped responding",
+        "offline",
+    )
+
     def __init__(self, device: WDADevice, timeout: float = 60.0) -> None:
         self.device = device
         self.client = httpx.Client(base_url=device.base_url, timeout=timeout)
@@ -426,6 +435,7 @@ class WDASession:
         return bool(
             self._find_control_center_toggle("airplane")
             or self._find_control_center_toggle("wifi")
+            or self._find_control_center_toggle("cellular")
         )
 
     def _open_control_center(self) -> bool:
@@ -534,6 +544,24 @@ class WDASession:
                 ("predicate string", airplane_switch),
                 ("predicate string", airplane_button),
             ]
+        elif toggle == "cellular":
+            cellular_switch = (
+                'type == "XCUIElementTypeSwitch" AND '
+                '(name CONTAINS[c] "Cellular" OR label CONTAINS[c] "Cellular" '
+                'OR name CONTAINS[c] "Mobile Data" OR label CONTAINS[c] "Mobile Data")'
+            )
+            cellular_button = (
+                'type == "XCUIElementTypeButton" AND '
+                '(name CONTAINS[c] "Cellular" OR label CONTAINS[c] "Cellular" '
+                'OR name CONTAINS[c] "Mobile Data" OR label CONTAINS[c] "Mobile Data")'
+            )
+            candidates = [
+                ("accessibility id", "cellular-data-button"),
+                ("accessibility id", "mobile-data-button"),
+                ("accessibility id", "cellular-button"),
+                ("predicate string", cellular_switch),
+                ("predicate string", cellular_button),
+            ]
         else:
             raise ValueError(f"Unknown toggle {toggle}")
 
@@ -570,6 +598,16 @@ class WDASession:
                 for value in normalized
             ):
                 return False
+        elif toggle == "cellular":
+            if any("off" in value or "disabled" in value for value in normalized):
+                return False
+            if any(
+                (("cellular" in value or "mobile" in value) and "on" in value)
+                or (("cellular" in value or "mobile" in value) and "," in value)
+                or value in {"cellular on", "mobile data on"}
+                for value in normalized
+            ):
+                return True
 
         selected = self._coerce_bool(attrs.get("selected"))
         if selected is not None:
@@ -663,6 +701,184 @@ class WDASession:
                 except Exception:
                     pass
 
+    def cellular_data_enabled(self) -> bool | None:
+        """Return the current Control Center cellular-data state when it can be inferred."""
+        opened = False
+        try:
+            opened = self._open_control_center()
+            if not opened:
+                return None
+            _, state = self._read_control_center_toggle_state("cellular")
+            return state
+        except Exception:
+            logger.error("Failed to read cellular-data state on %s", self.device.name, exc_info=True)
+            return None
+        finally:
+            try:
+                if opened:
+                    self._close_control_center()
+            except Exception:
+                try:
+                    self.press_button("home")
+                except Exception:
+                    pass
+
+    def set_cellular_data_enabled(self, enabled: bool) -> bool:
+        """Set the Control Center cellular-data toggle to the requested state."""
+        opened = False
+        try:
+            opened = self._open_control_center()
+            if not opened:
+                return False
+            ok = self._set_control_center_toggle("cellular", desired_on=enabled)
+            if ok:
+                logger.info(
+                    "Cellular data confirmed %s on %s",
+                    "on" if enabled else "off",
+                    self.device.name,
+                )
+            else:
+                logger.warning(
+                    "Could not verify cellular data %s on %s",
+                    "on" if enabled else "off",
+                    self.device.name,
+                )
+            return ok
+        except Exception:
+            logger.error(
+                "Failed to set cellular data %s on %s",
+                "on" if enabled else "off",
+                self.device.name,
+                exc_info=True,
+            )
+            return False
+        finally:
+            try:
+                if opened:
+                    self._close_control_center()
+            except Exception:
+                try:
+                    self.press_button("home")
+                except Exception:
+                    pass
+
+    def ensure_cellular_data_on(self) -> bool:
+        """Ensure the device's cellular/mobile-data toggle is enabled."""
+        return self.set_cellular_data_enabled(True)
+
+    @classmethod
+    def _carrier_probe_succeeded(cls, source: Any) -> bool:
+        """Recognize the captive-portal success page returned by a working carrier path."""
+        text = str(source).strip().lower()
+        if any(marker in text for marker in cls._CARRIER_PROBE_FAILURE_MARKERS):
+            return False
+        return any(marker in text for marker in cls._CARRIER_PROBE_SUCCESS_MARKERS)
+
+    def probe_cellular_connectivity(
+        self,
+        *,
+        attempts: int = 4,
+        wait_s: float = 5.0,
+        url: str | None = None,
+        cleanup: bool = True,
+    ) -> bool:
+        """Actively prove the device can reach the public internet over the carrier path."""
+        probe_url = url or self._CARRIER_PROBE_URL
+        try:
+            for _ in range(max(attempts, 1)):
+                request_url = probe_url
+                if url is None:
+                    request_url = f"{probe_url}?_={time.time_ns()}"
+                self.open_url(request_url)
+                time.sleep(wait_s)
+                try:
+                    if self._carrier_probe_succeeded(self.source()):
+                        logger.info("Carrier reachability probe succeeded on %s", self.device.name)
+                        return True
+                except RuntimeError:
+                    if not self.reconnect(attempts=1, delay_s=0.5):
+                        continue
+                except Exception:
+                    logger.debug("Carrier reachability probe source read failed on %s", self.device.name, exc_info=True)
+            logger.warning("Carrier reachability probe failed on %s", self.device.name)
+            return False
+        finally:
+            if cleanup:
+                self.reset_to_home()
+
+    def probe_carrier_reachability(
+        self,
+        *,
+        attempts: int = 4,
+        wait_s: float = 5.0,
+        url: str | None = None,
+        cleanup: bool = True,
+    ) -> bool:
+        """Backward-compatible alias for caller paths that still use the older probe name."""
+        return self.probe_cellular_connectivity(
+            attempts=attempts,
+            wait_s=wait_s,
+            url=url,
+            cleanup=cleanup,
+        )
+
+    def reset_cellular_data_connection(
+        self,
+        *,
+        wait_off_seconds: float = 60.0,
+        recovery_wait_s: float = 10.0,
+        probe_attempts: int = 4,
+        probe_wait_s: float = 5.0,
+    ) -> bool:
+        """Cycle cellular data OFF for 60s, restore it, and prove carrier recovery."""
+        try:
+            if not self.ensure_airplane_mode_off():
+                return False
+            if not self.ensure_wifi_off():
+                return False
+            if not self.set_cellular_data_enabled(False):
+                return False
+
+            time.sleep(wait_off_seconds)
+
+            if not self.set_cellular_data_enabled(True):
+                return False
+
+            time.sleep(recovery_wait_s)
+
+            if not self.reconnect():
+                logger.warning("Could not reconnect WDA session on %s after cellular reset", self.device.name)
+                return False
+            if not self.ensure_cellular_only():
+                logger.warning("Cellular reset on %s did not restore cellular-only state", self.device.name)
+                return False
+            return self.probe_cellular_connectivity(
+                attempts=probe_attempts,
+                wait_s=probe_wait_s,
+                cleanup=False,
+            )
+        except Exception:
+            logger.error("Failed to reset cellular data on %s", self.device.name, exc_info=True)
+            return False
+        finally:
+            self.reset_to_home()
+
+    def reset_cellular_data(
+        self,
+        *,
+        disabled_wait_s: float = 60.0,
+        recovery_wait_s: float = 10.0,
+        probe_attempts: int = 4,
+        probe_wait_s: float = 5.0,
+    ) -> bool:
+        """Backward-compatible alias for callers migrating off airplane-mode rotation."""
+        return self.reset_cellular_data_connection(
+            wait_off_seconds=disabled_wait_s,
+            recovery_wait_s=recovery_wait_s,
+            probe_attempts=probe_attempts,
+            probe_wait_s=probe_wait_s,
+        )
+
     # --- WiFi enforcement (must be OFF — all traffic via cellular) ---
 
     def ensure_wifi_off(self) -> bool:
@@ -699,69 +915,41 @@ class WDASession:
                     pass
 
     def ensure_cellular_only(self) -> bool:
-        """Force the device into the expected network state: airplane off, Wi-Fi off."""
+        """Force the device into the expected network state: airplane off, cellular on, Wi-Fi off."""
         if not self.ensure_airplane_mode_off():
             return False
+        if not self.ensure_cellular_data_on():
+            return False
         return self.ensure_wifi_off()
+
+    def ensure_cellular_ready(
+        self,
+        *,
+        probe_attempts: int = 4,
+        probe_wait_s: float = 5.0,
+        cleanup: bool = False,
+    ) -> bool:
+        """Enforce cellular-only radio state and prove that carrier data is reachable."""
+        if not self.ensure_cellular_only():
+            return False
+        return self.probe_cellular_connectivity(
+            attempts=probe_attempts,
+            wait_s=probe_wait_s,
+            cleanup=cleanup,
+        )
 
     # --- Airplane mode (IP rotation) ---
 
     def toggle_airplane_mode(self, wait_after: float = 6.0) -> bool:
-        """Toggle airplane mode ON then OFF via Control Center to rotate cellular IP.
-
-        Swipes down from top-right to open Control Center, taps the airplane
-        mode icon, waits, then taps again to re-enable cellular.
-
-        Returns True if the toggle sequence completed without error.
-        """
-        if not self.ensure_airplane_mode_off():
-            logger.warning(
-                "Refusing airplane toggle on %s because baseline airplane-off state could not be verified",
-                self.device.name,
-            )
-            return False
-
-        opened = False
-        rotated = False
-        try:
-            opened = self._open_control_center()
-            if not opened:
-                return False
-            if not self._set_control_center_toggle("airplane", desired_on=True):
-                logger.warning("Could not verify airplane mode enabled on %s", self.device.name)
-                return False
-            time.sleep(3.0)
-            if not self._set_control_center_toggle("airplane", desired_on=False):
-                logger.warning("Could not verify airplane mode disabled on %s", self.device.name)
-                return False
-            rotated = True
-        except Exception:
-            logger.error("Failed to toggle airplane mode on %s", self.device.name, exc_info=True)
-        finally:
-            try:
-                if opened:
-                    self._close_control_center()
-            except Exception:
-                try:
-                    self.press_button("home")
-                except Exception:
-                    pass
-
-        time.sleep(wait_after)
-        if not self.reconnect():
-            logger.warning("Could not reconnect WDA session on %s after airplane toggle", self.device.name)
-            return False
-        if not self.ensure_cellular_only():
-            logger.warning(
-                "Airplane toggle on %s did not return to cellular-only state",
-                self.device.name,
-            )
-            return False
-
-        self.reset_to_home()
-        if rotated:
-            logger.info("Airplane mode toggled on %s — IP rotated", self.device.name)
-        return rotated
+        """Backward-compatible alias for the safer cellular-data reset flow."""
+        logger.warning(
+            "toggle_airplane_mode() is deprecated on %s; resetting cellular data instead",
+            self.device.name,
+        )
+        return self.reset_cellular_data_connection(
+            wait_off_seconds=60.0,
+            recovery_wait_s=max(wait_after, 0.0),
+        )
 
 
 # --- Bundle IDs (canonical map — import from here) ---

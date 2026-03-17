@@ -29,9 +29,13 @@ Manages a WDA session on a single device. Key methods:
 | `screen_size()` | Get device screen dimensions (cached) |
 | `screenshot(save_path?)` | Capture PNG screenshot |
 | `ensure_airplane_mode_off()` | Verify airplane mode is OFF via Control Center |
+| `ensure_cellular_data_on()` | Verify cellular/mobile data is ON via Control Center |
 | `ensure_wifi_off()` | Verify Wi-Fi is OFF via Control Center |
-| `ensure_cellular_only()` | Enforce airplane OFF + Wi-Fi OFF before network work |
-| `toggle_airplane_mode()` | Rotate IP safely, then prove the phone returned to cellular-only |
+| `ensure_cellular_only()` | Enforce airplane OFF + cellular ON + Wi-Fi OFF before network work |
+| `ensure_cellular_ready()` | Enforce cellular-only and prove carrier reachability |
+| `probe_cellular_connectivity()` | Open a probe URL in Safari to confirm carrier data works |
+| `reset_cellular_data_connection()` | Disable cellular data for 60s, restore it, then prove recovery |
+| `toggle_airplane_mode()` | Backward-compatible alias that now routes to cellular-data reset |
 | `launch_app(bundle_id)` | Activate/bring app to foreground |
 | `terminate_app(bundle_id)` | Kill app |
 | `app_state(bundle_id)` | 1=not running, 2=bg, 3=suspended, 4=foreground |

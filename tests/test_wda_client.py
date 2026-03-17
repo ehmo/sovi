@@ -58,6 +58,18 @@ def test_toggle_state_from_attributes_prefers_value_over_selected_for_airplane()
     assert state is True
 
 
+def test_toggle_state_from_attributes_detects_cellular_on():
+    session = _make_session()
+    state = session._toggle_state_from_attributes("cellular", {"label": "Cellular Data, LTE"})
+    assert state is True
+
+
+def test_toggle_state_from_attributes_detects_cellular_off():
+    session = _make_session()
+    state = session._toggle_state_from_attributes("cellular", {"label": "Mobile Data Off"})
+    assert state is False
+
+
 def test_element_attribute_uses_private_attribute_accessor():
     session = _make_session()
     with patch.object(session, "_get_element_attribute", return_value="XCUIElementTypeButton") as mock_attr:
@@ -148,54 +160,95 @@ def test_set_control_center_toggle_reconnects_after_invalid_session():
     session.element_click.assert_called_once_with("toggle-1")
 
 
-def test_toggle_airplane_mode_reconnects_before_postcheck():
+def test_ensure_cellular_data_on_uses_control_center_toggle():
     session = _make_session()
-    session.ensure_airplane_mode_off = MagicMock(side_effect=[True, True])
-    session.ensure_wifi_off = MagicMock(return_value=True)
     session._open_control_center = MagicMock(return_value=True)
+    session._set_control_center_toggle = MagicMock(return_value=True)
     session._close_control_center = MagicMock()
-    session._set_control_center_toggle = MagicMock(side_effect=[True, True])
-    session.reconnect = MagicMock(return_value=True)
-    session.reset_to_home = MagicMock()
 
-    with patch("time.sleep"):
-        ok = session.toggle_airplane_mode(wait_after=0.0)
+    ok = session.ensure_cellular_data_on()
 
     assert ok is True
-    session.reconnect.assert_called_once_with()
+    session._set_control_center_toggle.assert_called_once_with("cellular", desired_on=True)
+    session._close_control_center.assert_called_once_with()
+
+
+def test_probe_cellular_connectivity_returns_true_on_success_page():
+    session = _make_session()
+    session.open_url = MagicMock()
+    session.source = MagicMock(return_value="<html><title>Success</title><body>Success</body></html>")
+    session.reset_to_home = MagicMock()
+
+    with patch("time.sleep"), patch("time.time_ns", return_value=1234):
+        ok = session.probe_cellular_connectivity(attempts=1, wait_s=0.0)
+
+    assert ok is True
+    session.open_url.assert_called_once_with("http://captive.apple.com/hotspot-detect.html?_=1234")
     session.reset_to_home.assert_called_once_with()
 
 
-def test_toggle_airplane_mode_restores_cellular_only():
+def test_probe_cellular_connectivity_reconnects_after_invalid_session():
     session = _make_session()
-    session.ensure_airplane_mode_off = MagicMock(side_effect=[True, True])
-    session.ensure_wifi_off = MagicMock(return_value=True)
-    session._open_control_center = MagicMock(return_value=True)
-    session._close_control_center = MagicMock()
-    session._set_control_center_toggle = MagicMock(side_effect=[True, True])
+    session.open_url = MagicMock()
+    session.source = MagicMock(side_effect=[RuntimeError("invalid session id"), "<html>Success</html>"])
     session.reconnect = MagicMock(return_value=True)
     session.reset_to_home = MagicMock()
 
-    with patch("time.sleep"):
-        ok = session.toggle_airplane_mode(wait_after=0.0)
+    with patch("time.sleep"), patch("time.time_ns", side_effect=[1111, 2222]):
+        ok = session.probe_cellular_connectivity(attempts=2, wait_s=0.0)
 
     assert ok is True
-    assert session.ensure_airplane_mode_off.call_count == 2
-    session.ensure_wifi_off.assert_called_once_with()
-    assert session._set_control_center_toggle.call_args_list[0].kwargs == {"desired_on": True}
-    assert session._set_control_center_toggle.call_args_list[1].kwargs == {"desired_on": False}
+    session.reconnect.assert_called_once_with(attempts=1, delay_s=0.5)
+    assert session.open_url.call_args_list[0].args == ("http://captive.apple.com/hotspot-detect.html?_=1111",)
+    assert session.open_url.call_args_list[1].args == ("http://captive.apple.com/hotspot-detect.html?_=2222",)
+    session.reset_to_home.assert_called_once_with()
 
 
-def test_toggle_airplane_mode_fails_if_postcheck_cannot_restore_cellular_only():
+def test_reset_cellular_data_connection_turns_data_off_then_on_and_proves_recovery():
     session = _make_session()
-    session.ensure_airplane_mode_off = MagicMock(side_effect=[True, False])
+    session.ensure_airplane_mode_off = MagicMock(return_value=True)
     session.ensure_wifi_off = MagicMock(return_value=True)
-    session._open_control_center = MagicMock(return_value=True)
-    session._close_control_center = MagicMock()
-    session._set_control_center_toggle = MagicMock(side_effect=[True, True])
+    session.set_cellular_data_enabled = MagicMock(side_effect=[True, True])
     session.reconnect = MagicMock(return_value=True)
+    session.ensure_cellular_only = MagicMock(return_value=True)
+    session.probe_cellular_connectivity = MagicMock(return_value=True)
+    session.reset_to_home = MagicMock()
 
-    with patch("time.sleep"):
-        ok = session.toggle_airplane_mode(wait_after=0.0)
+    with patch("time.sleep") as mock_sleep:
+        ok = session.reset_cellular_data_connection(wait_off_seconds=60.0, recovery_wait_s=0.0)
+
+    assert ok is True
+    assert session.set_cellular_data_enabled.call_args_list[0].args == (False,)
+    assert session.set_cellular_data_enabled.call_args_list[1].args == (True,)
+    assert any(call.args == (60.0,) for call in mock_sleep.call_args_list)
+    session.probe_cellular_connectivity.assert_called_once_with(attempts=4, wait_s=5.0, cleanup=False)
+    session.reset_to_home.assert_called_once_with()
+
+
+def test_toggle_airplane_mode_uses_cellular_reset_flow():
+    session = _make_session()
+    session.reset_cellular_data_connection = MagicMock(return_value=True)
+
+    ok = session.toggle_airplane_mode(wait_after=0.0)
+
+    assert ok is True
+    session.reset_cellular_data_connection.assert_called_once_with(
+        wait_off_seconds=60.0,
+        recovery_wait_s=0.0,
+    )
+
+
+def test_ensure_cellular_ready_requires_probe_success():
+    session = _make_session()
+    session.ensure_cellular_only = MagicMock(return_value=True)
+    session.probe_cellular_connectivity = MagicMock(return_value=False)
+
+    ok = session.ensure_cellular_ready(probe_attempts=2, probe_wait_s=1.5, cleanup=True)
 
     assert ok is False
+    session.ensure_cellular_only.assert_called_once_with()
+    session.probe_cellular_connectivity.assert_called_once_with(
+        attempts=2,
+        wait_s=1.5,
+        cleanup=True,
+    )

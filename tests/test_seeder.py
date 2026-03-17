@@ -19,8 +19,7 @@ from sovi.device.seeder import _execute_account_creation
 class TestExecuteAccountCreation:
     def test_raises_detailed_failure_when_account_creation_returns_none(self):
         wda = MagicMock()
-        wda.toggle_airplane_mode.return_value = True
-        wda.ensure_cellular_only.return_value = True
+        wda.reset_cellular_data_connection.return_value = True
         task = {
             "persona_id": "persona-1",
             "niche_id": "niche-1",
@@ -55,8 +54,7 @@ class TestExecuteAccountCreation:
 
     def test_returns_none_when_post_rotation_cellular_verification_fails(self):
         wda = MagicMock()
-        wda.toggle_airplane_mode.return_value = True
-        wda.ensure_cellular_only.return_value = False
+        wda.reset_cellular_data_connection.return_value = False
         task = {
             "persona_id": "persona-1",
             "niche_id": "niche-1",

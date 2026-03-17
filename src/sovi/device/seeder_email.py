@@ -290,7 +290,7 @@ def create_protonmail_email(
     """Create a ProtonMail account for a persona on-device via Safari.
 
     Flow:
-    1. Toggle airplane mode (fresh cellular IP)
+    1. Reset cellular data between tasks for a fresh carrier session
     2. Open Safari → ProtonMail signup
     3. Fill username + password
     4. Solve CAPTCHA if presented
@@ -312,10 +312,10 @@ def create_protonmail_email(
                 context={"persona_id": persona_id, "email": email})
 
     try:
-        # Step 0: Fresh cellular IP
-        if not wda.toggle_airplane_mode():
+        # Step 0: Fresh carrier session
+        if not wda.reset_cellular_data_connection():
             events.emit("persona", "error", "cellular_enforcement_failed",
-                        f"Could not rotate to a cellular-only state for {email}",
+                        f"Could not reset to a cellular-only state for {email}",
                         device_id=device_id,
                         context={"persona_id": persona_id, "email": email})
             return None
