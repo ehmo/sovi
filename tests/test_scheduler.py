@@ -279,7 +279,7 @@ class TestGetNextTask:
 
 
 class TestExecuteWarmingErrorDetection:
-    def test_wifi_enforcement_failure_returns_false(self):
+    def test_cellular_enforcement_failure_returns_false(self):
         sched = _make_scheduler()
         dt = _make_device_thread()
         task = {
@@ -297,7 +297,7 @@ class TestExecuteWarmingErrorDetection:
 
         device = WDADevice(name="test", udid="abc123", wda_port=8100)
         mock_session = MagicMock()
-        mock_session.ensure_wifi_off.return_value = False
+        mock_session.ensure_cellular_only.return_value = False
 
         with (
             patch("sovi.device.scheduler.WDASession", return_value=mock_session),
@@ -328,7 +328,7 @@ class TestExecuteWarmingErrorDetection:
 
         device = WDADevice(name="test", udid="abc123", wda_port=8100)
         mock_session = MagicMock()
-        mock_session.ensure_wifi_off.return_value = True
+        mock_session.ensure_cellular_only.return_value = True
 
         with (
             patch("sovi.device.scheduler.WDASession", return_value=mock_session),
@@ -514,6 +514,30 @@ class TestWarmerTaskDispatch:
 
         mock_exec.assert_called_once_with(device, dt, task)
         mock_end.assert_called_once_with("sess-2", "success")
+
+
+class TestSeederIteration:
+    def test_stops_when_cellular_enforcement_fails(self):
+        sched = _make_scheduler()
+        dt = _make_device_thread()
+
+        from sovi.device.wda_client import WDADevice
+
+        device = WDADevice(name="test", udid="abc123", wda_port=8100)
+        mock_session = MagicMock()
+        mock_session.ensure_cellular_only.return_value = False
+
+        with (
+            patch("sovi.device.scheduler.WDASession", return_value=mock_session),
+            patch("sovi.device.scheduler.run_seeder_cycle") as mock_run_cycle,
+            patch.object(sched._stop_event, "wait") as mock_wait,
+            patch(_EVENTS_EMIT),
+        ):
+            sched._run_seeder_iteration(device, dt)
+
+        mock_run_cycle.assert_not_called()
+        mock_wait.assert_called_once_with(60)
+        assert dt.error == "cellular_enforcement_failed"
 
 
 class TestWaitForWda:

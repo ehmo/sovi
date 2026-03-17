@@ -3,11 +3,12 @@
 Seeder devices run this pipeline instead of the warmer pipeline.
 Each cycle:
 1. Claim a seeder_task (email or account creation)
-2. Toggle airplane mode (fresh cellular IP)
-3. Execute on-device (Safari for email, app for platform)
-4. Store result in DB
-5. Bind new account to a warmer device
-6. Cooldown, repeat
+2. Verify airplane mode is off and Wi-Fi is off
+3. Rotate airplane mode safely for a fresh cellular IP when needed
+4. Execute on-device (Safari for email, app for platform)
+5. Store result in DB
+6. Bind new account to a warmer device
+7. Cooldown, repeat
 
 All persona-facing traffic goes through the phone's cellular connection.
 """
@@ -194,9 +195,11 @@ def _execute_account_creation(
 
     platform = task["platform"]
 
-    # Toggle airplane mode for fresh IP
-    wda.toggle_airplane_mode()
-    time.sleep(6)
+    # Rotate to a fresh cellular IP. Abort if the phone cannot be
+    # returned to airplane-off / Wi-Fi-off state.
+    if not wda.toggle_airplane_mode():
+        logger.error("Seeder %s: could not rotate to a safe cellular-only state", device_name)
+        return None
 
     result = create_account_for_persona(wda, persona, platform, device_id=device_id)
 

@@ -10,14 +10,13 @@ import logging
 import random
 import time
 from datetime import datetime
-from typing import Any
 
 from sovi import events
 from sovi.auth import generate_password
 from sovi.auth.captcha_solver import solve_funcaptcha, solve_image
 from sovi.auth.sms_verifier import cancel_verification, request_number, wait_for_code
 from sovi.crypto import encrypt
-from sovi.db import sync_execute, sync_execute_one
+from sovi.db import sync_execute_one
 from sovi.device.wda_client import DeviceAutomation, WDASession
 
 logger = logging.getLogger(__name__)
@@ -138,14 +137,23 @@ def create_email_for_persona(
     email_address = f"{username}@{domain}"
     password = generate_password()
 
-    events.emit("persona", "info", "email_creation_started",
-                f"Creating {provider} email for {persona.get('display_name', '?')}: {email_address}",
-                device_id=device_id,
-                context={"provider": provider, "persona_id": persona_id})
+    events.emit(
+        "persona",
+        "info",
+        "email_creation_started",
+        f"Creating {provider} email for {persona.get('display_name', '?')}: {email_address}",
+        device_id=device_id,
+        context={"provider": provider, "persona_id": persona_id},
+    )
 
     try:
         # Step 0: Rotate IP
-        wda.toggle_airplane_mode()
+        if not wda.toggle_airplane_mode():
+            events.emit("persona", "error", "cellular_enforcement_failed",
+                        f"Could not rotate to a cellular-only state for {email_address}",
+                        device_id=device_id,
+                        context={"provider": provider, "persona_id": persona_id})
+            return None
 
         # Step 1: Open signup page
         open_safari(wda, config["signup_url"])

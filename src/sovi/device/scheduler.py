@@ -174,6 +174,40 @@ class DeviceScheduler:
             "sessions_per_day_target": settings.max_sessions_per_device_day,
         }
 
+    def _enforce_cellular_only(
+        self,
+        session: WDASession,
+        dt: DeviceThread,
+        *,
+        device_name: str,
+        platform: str | None = None,
+        account_id: str | None = None,
+    ) -> bool:
+        """Ensure the device is using cellular-only networking before continuing."""
+        dt.current_task = f"enforcing_cellular_only:{device_name}"
+        if session.ensure_cellular_only():
+            return True
+
+        context = {"device_name": device_name}
+        if platform:
+            context["platform"] = platform
+
+        emit_kwargs: dict[str, Any] = {
+            "device_id": dt.device_id,
+            "context": context,
+        }
+        if account_id:
+            emit_kwargs["account_id"] = account_id
+
+        events.emit(
+            "scheduler",
+            "error",
+            "cellular_enforcement_failed",
+            f"Could not verify cellular-only state on {device_name}",
+            **emit_kwargs,
+        )
+        return False
+
     def _device_loop(self, device_row: dict[str, Any], dt: DeviceThread) -> None:
         """Main loop for a single device thread.
 
@@ -253,11 +287,18 @@ class DeviceScheduler:
         try:
             session.connect()
 
-            # CRITICAL: Ensure WiFi is OFF — all traffic must be cellular/GSM
-            dt.current_task = "enforcing_wifi_off"
-            session.ensure_wifi_off()
+            # CRITICAL: all persona-facing traffic must be cellular-only.
+            if not self._enforce_cellular_only(session, dt, device_name=device.name):
+                dt.error = "cellular_enforcement_failed"
+                self._stop_event.wait(60)
+                return
 
-            result = run_seeder_cycle(session, dt.device_id, device.name, stop_event=self._stop_event)
+            result = run_seeder_cycle(
+                session,
+                dt.device_id,
+                device.name,
+                stop_event=self._stop_event,
+            )
             if result:
                 dt.sessions_today += 1
                 dt.last_session_at = datetime.now(timezone.utc)
@@ -526,13 +567,14 @@ class DeviceScheduler:
         try:
             session.connect()
 
-            # Step 0a: Ensure WiFi is OFF before any network activity
-            dt.current_task = f"enforcing_wifi_off:{device.name}"
-            if not session.ensure_wifi_off():
-                events.emit("scheduler", "error", "wifi_enforcement_failed",
-                           f"Could not verify WiFi is off on {device.name}",
-                           device_id=device_id, account_id=account_id,
-                           context={"platform": platform, "device_name": device.name})
+            # Step 0a: Ensure the phone is on cellular with Wi-Fi disabled.
+            if not self._enforce_cellular_only(
+                session,
+                dt,
+                device_name=device.name,
+                platform=platform,
+                account_id=account_id,
+            ):
                 return False
 
             # NOTE: airplane mode toggle removed from warming path — too risky,
@@ -679,6 +721,8 @@ class DeviceScheduler:
         session = WDASession(device)
         try:
             session.connect()
+            if not self._enforce_cellular_only(session, dt, device_name=device.name):
+                return False
 
             from sovi.persona.email_creator import create_email_for_persona
             result = create_email_for_persona(
@@ -735,6 +779,13 @@ class DeviceScheduler:
         session = WDASession(device)
         try:
             session.connect()
+            if not self._enforce_cellular_only(
+                session,
+                dt,
+                device_name=device.name,
+                platform=platform,
+            ):
+                return False
 
             from sovi.persona.account_creator import create_account_for_persona
             # Build persona dict with expected keys

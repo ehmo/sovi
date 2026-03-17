@@ -28,6 +28,10 @@ Manages a WDA session on a single device. Key methods:
 | `is_ready()` | Check WDA `/status` endpoint |
 | `screen_size()` | Get device screen dimensions (cached) |
 | `screenshot(save_path?)` | Capture PNG screenshot |
+| `ensure_airplane_mode_off()` | Verify airplane mode is OFF via Control Center |
+| `ensure_wifi_off()` | Verify Wi-Fi is OFF via Control Center |
+| `ensure_cellular_only()` | Enforce airplane OFF + Wi-Fi OFF before network work |
+| `toggle_airplane_mode()` | Rotate IP safely, then prove the phone returned to cellular-only |
 | `launch_app(bundle_id)` | Activate/bring app to foreground |
 | `terminate_app(bundle_id)` | Kill app |
 | `app_state(bundle_id)` | 1=not running, 2=bg, 3=suspended, 4=foreground |
@@ -256,6 +260,7 @@ Singleton class (accessed via `get_scheduler()`).
 while not stopped:
     heartbeat()
     if not wait_for_wda(): backoff 60s, continue
+    enforce_cellular_only()
     task = get_next_task()
     if task is None: idle 30s, continue
     if task.type == "warm": execute_warming()
@@ -263,6 +268,11 @@ while not stopped:
     sessions_today += 1
     cooldown 30s
 ```
+
+Before any persona-facing task runs, the scheduler now verifies the phone is in the expected radio state:
+- airplane mode must be OFF
+- Wi-Fi must be OFF
+- seeder/email creation flows abort if airplane-mode IP rotation cannot return to that state
 
 **Task Priority:**
 1. Warm existing account (not yet warmed today, earlier phases first)

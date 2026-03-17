@@ -68,25 +68,32 @@ Airplane mode toggle is done via WDA by navigating Control Center:
 [swipe down from top-right] -> [tap airplane icon] -> [wait 3s] -> [tap airplane icon again] -> [wait for connectivity]
 ```
 
-This is integrated into the scheduler's session flow as Step 0, before app deletion:
+This is now integrated into a hardened device preflight. Every task first proves the phone is in the expected radio state, and only account-creation flows perform IP rotation:
 
 ```
 Session N:
-  0. [airplane mode ON → OFF] → new IP
-  1. [delete app] → new IDFV
-  2. [install app]
-  3. [login account_X]
-  4. [warm 30 min]
+  0. [verify airplane OFF + Wi-Fi OFF]
+  1. [optional airplane mode ON → OFF] → new IP
+  2. [delete app] → new IDFV
+  3. [install app]
+  4. [login account_X]
+  5. [warm / create / sign up]
 ```
 
 Each session gets: **new IP** + **new IDFV** = maximum isolation.
 
 ### Connectivity Verification
 
-After airplane mode toggle, verify the device has connectivity before proceeding:
-1. Poll a lightweight endpoint (e.g., generate.apple.com/204) via WDA/Safari
-2. Alternatively, just wait 5-8s (cellular reconnection is fast)
-3. If no connectivity after 15s, retry the toggle
+Before any persona-facing task, verify the radio state in Control Center:
+1. Airplane mode is OFF
+2. Wi-Fi is OFF
+3. Only then proceed on cellular/GSM
+
+For IP rotation flows, do not assume success after tapping. The runtime must:
+1. Verify airplane mode started OFF
+2. Turn airplane mode ON
+3. Turn airplane mode back OFF
+4. Re-check airplane OFF and Wi-Fi OFF before continuing
 
 ### Timing Budget
 
@@ -109,13 +116,15 @@ Scheduler Thread
     +-- 2. _wait_for_wda(device) — poll /status until ready
     +-- 3. _get_next_task(device_id) — SQL: FOR UPDATE SKIP LOCKED
     |
-    +-- 4. toggle_airplane_mode(wda)     <-- NEW: rotate IP
-    +-- 5. delete_app(wda, platform)      — IDFV isolation
-    +-- 6. install_from_app_store(wda, platform)
-    +-- 7. login_account(wda, account) — decrypt creds -> platform login
-    +-- 8. run_warming(wda, config) — 30 min of platform-specific behavior
-    +-- 9. UPDATE accounts SET last_warmed_at, warming_day_count, current_state
-    +-- 10. emit event -> system_events table
+    +-- 4. ensure_airplane_mode_off()     <-- hard guard
+    +-- 5. ensure_wifi_off()              <-- hard guard
+    +-- 6. toggle_airplane_mode(wda)?     <-- seeder/email rotation only
+    +-- 7. delete_app(wda, platform)      — IDFV isolation
+    +-- 8. install_from_app_store(wda, platform)
+    +-- 9. login_account(wda, account) — decrypt creds -> platform login
+    +-- 10. run_warming(wda, config) — 30 min of platform-specific behavior
+    +-- 11. UPDATE accounts SET last_warmed_at, warming_day_count, current_state
+    +-- 12. emit event -> system_events table
 ```
 
 ## Physical Setup
@@ -138,4 +147,4 @@ Scheduler Thread
 
 All devices **must** have Wi-Fi disabled to ensure traffic routes through cellular. If Wi-Fi is on, the phone will prefer Wi-Fi and the airplane mode IP rotation won't work (Wi-Fi IP stays the same).
 
-The airplane mode toggle also disables Wi-Fi, and when airplane mode is turned back off, only cellular reconnects (Wi-Fi stays off if it was off before).
+Do not rely on the toggle alone. The runtime now re-checks both airplane mode and Wi-Fi after rotation and aborts the task if it cannot prove the device is back on cellular-only networking.

@@ -24,7 +24,7 @@ from PIL import Image
 from sovi import events
 from sovi.auth import generate_password
 from sovi.crypto import encrypt
-from sovi.db import sync_execute, sync_execute_one
+from sovi.db import sync_execute_one
 from sovi.device.wda_client import WDASession
 
 logger = logging.getLogger(__name__)
@@ -313,8 +313,12 @@ def create_protonmail_email(
 
     try:
         # Step 0: Fresh cellular IP
-        wda.toggle_airplane_mode()
-        time.sleep(6)  # wait for cellular reconnect
+        if not wda.toggle_airplane_mode():
+            events.emit("persona", "error", "cellular_enforcement_failed",
+                        f"Could not rotate to a cellular-only state for {email}",
+                        device_id=device_id,
+                        context={"persona_id": persona_id, "email": email})
+            return None
 
         # Step 1: Open ProtonMail signup in Safari
         wda.terminate_app(SAFARI)

@@ -12,6 +12,7 @@ import logging
 import random
 import time
 from dataclasses import dataclass
+from typing import Any
 
 import httpx
 
@@ -378,6 +379,179 @@ class WDASession:
         except Exception:
             pass
 
+    # --- Network state enforcement (must be cellular-only) ---
+
+    def _open_control_center(self) -> None:
+        """Open Control Center from the top-right corner."""
+        size = self.screen_size()
+        w, h = size["width"], size["height"]
+        self.swipe(int(w * 0.9), 0, int(w * 0.5), int(h * 0.5), duration=0.3)
+        time.sleep(1.5)
+
+    def _close_control_center(self) -> None:
+        """Dismiss Control Center."""
+        size = self.screen_size()
+        w, h = size["width"], size["height"]
+        self.swipe(int(w * 0.5), int(h * 0.9), int(w * 0.5), int(h * 0.5), duration=0.3)
+        time.sleep(0.5)
+
+    def _get_element_attribute(self, element_id: str, attribute: str) -> Any:
+        """Fetch a single element attribute from WDA."""
+        try:
+            resp = self.client.get(
+                f"{self._s}/element/{element_id}/attribute/{attribute}",
+                timeout=5,
+            )
+            return resp.json().get("value")
+        except Exception:
+            return None
+
+    @staticmethod
+    def _coerce_bool(value: Any) -> bool | None:
+        """Best-effort bool coercion for WDA attribute values."""
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, int):
+            return bool(value)
+        if value is None:
+            return None
+
+        text = str(value).strip().lower()
+        if text in {"1", "true", "yes", "on", "selected"}:
+            return True
+        if text in {"0", "false", "no", "off", "unselected"}:
+            return False
+        return None
+
+    def _find_control_center_toggle(self, toggle: str) -> dict | None:
+        """Find a Control Center network toggle by stable id, then by label."""
+        if toggle == "wifi":
+            wifi_switch = (
+                'type == "XCUIElementTypeSwitch" AND '
+                '(name CONTAINS[c] "Wi-Fi" OR label CONTAINS[c] "Wi-Fi" '
+                'OR name CONTAINS[c] "wifi" OR label CONTAINS[c] "wifi")'
+            )
+            wifi_button = (
+                'type == "XCUIElementTypeButton" AND '
+                '(name CONTAINS[c] "Wi-Fi" OR label CONTAINS[c] "Wi-Fi" '
+                'OR name CONTAINS[c] "wifi" OR label CONTAINS[c] "wifi")'
+            )
+            candidates = [
+                ("accessibility id", "wifi-button"),
+                ("predicate string", wifi_switch),
+                ("predicate string", wifi_button),
+            ]
+        elif toggle == "airplane":
+            airplane_switch = (
+                'type == "XCUIElementTypeSwitch" AND '
+                '(name CONTAINS[c] "Airplane" OR label CONTAINS[c] "Airplane")'
+            )
+            airplane_button = (
+                'type == "XCUIElementTypeButton" AND '
+                '(name CONTAINS[c] "Airplane" OR label CONTAINS[c] "Airplane")'
+            )
+            candidates = [
+                ("accessibility id", "airplane-mode-button"),
+                ("predicate string", airplane_switch),
+                ("predicate string", airplane_button),
+            ]
+        else:
+            raise ValueError(f"Unknown toggle {toggle}")
+
+        for using, value in candidates:
+            element = self.find_element(using, value)
+            if element:
+                return element
+        return None
+
+    def _toggle_state_from_attributes(self, toggle: str, attrs: dict[str, Any]) -> bool | None:
+        """Infer a Control Center toggle state from multiple WDA attributes."""
+        selected = self._coerce_bool(attrs.get("selected"))
+        if selected is not None:
+            return selected
+
+        values = [attrs.get(attr) for attr in ("value", "label", "name")]
+        normalized = [str(value).strip().lower() for value in values if value not in (None, "")]
+
+        for value in values:
+            coerced = self._coerce_bool(value)
+            if coerced is not None:
+                return coerced
+
+        if toggle == "wifi":
+            if any("connected" in value or "," in value for value in normalized):
+                return True
+            if any(value in {"wi-fi", "wifi"} or "off" in value for value in normalized):
+                return False
+        elif toggle == "airplane":
+            if any(
+                ("airplane" in value and "on" in value) or value == "on"
+                for value in normalized
+            ):
+                return True
+            if any(
+                ("airplane" in value and "off" in value)
+                or value in {"airplane", "airplane mode"}
+                for value in normalized
+            ):
+                return False
+
+        return None
+
+    def _read_control_center_toggle_state(self, toggle: str) -> tuple[dict | None, bool | None]:
+        """Return the toggle element and inferred state."""
+        element = self._find_control_center_toggle(toggle)
+        if not element:
+            return None, None
+
+        element_id = element["ELEMENT"]
+        attrs = {
+            attr: self._get_element_attribute(element_id, attr)
+            for attr in ("value", "label", "name", "selected")
+        }
+        return element, self._toggle_state_from_attributes(toggle, attrs)
+
+    def _set_control_center_toggle(self, toggle: str, *, desired_on: bool, attempts: int = 3) -> bool:
+        """Set a Control Center toggle to a desired state and verify it."""
+        for _ in range(attempts):
+            element, state = self._read_control_center_toggle_state(toggle)
+            if state is desired_on:
+                return True
+            if not element:
+                logger.warning("Could not find %s toggle on %s", toggle, self.device.name)
+                return False
+
+            self.element_click(element["ELEMENT"])
+            time.sleep(1.0)
+
+        _, final_state = self._read_control_center_toggle_state(toggle)
+        return final_state is desired_on
+
+    def ensure_airplane_mode_off(self) -> bool:
+        """Ensure airplane mode is disabled before any network activity."""
+        opened = False
+        try:
+            self._open_control_center()
+            opened = True
+            ok = self._set_control_center_toggle("airplane", desired_on=False)
+            if ok:
+                logger.info("Airplane mode confirmed off on %s", self.device.name)
+            else:
+                logger.warning("Could not verify airplane mode off on %s", self.device.name)
+            return ok
+        except Exception:
+            logger.error("Failed to ensure airplane mode off on %s", self.device.name, exc_info=True)
+            return False
+        finally:
+            try:
+                if opened:
+                    self._close_control_center()
+            except Exception:
+                try:
+                    self.press_button("home")
+                except Exception:
+                    pass
+
     # --- WiFi enforcement (must be OFF — all traffic via cellular) ---
 
     def ensure_wifi_off(self) -> bool:
@@ -389,73 +563,34 @@ class WDASession:
 
         Returns True if WiFi is confirmed off.
         """
-        size = self.screen_size()
-        w, h = size["width"], size["height"]
-
+        opened = False
         try:
-            # Open Control Center
-            self.swipe(int(w * 0.9), 0, int(w * 0.5), int(h * 0.5), duration=0.3)
-            time.sleep(1.5)
-
-            # Find WiFi button
-            wifi_el = self.find_element("accessibility id", "wifi-button")
-            if wifi_el:
-                # Check if WiFi is enabled — the label/value contains state info
-                # If the button's value indicates it's on, tap to disable
-                el_id = wifi_el["ELEMENT"]
-                try:
-                    resp = self.client.get(f"{self._s}/element/{el_id}/attribute/value", timeout=5)
-                    value = resp.json().get("value", "")
-                except Exception:
-                    value = ""
-
-                # WiFi button value is "Wi-Fi" when off, "Wi-Fi, <network>" when on
-                if "," in str(value) or "connected" in str(value).lower():
-                    self.element_click(el_id)
-                    logger.info("WiFi was ON — disabled on %s", self.device.name)
-                    time.sleep(1.0)
-                else:
-                    logger.info("WiFi confirmed off on %s", self.device.name)
+            self._open_control_center()
+            opened = True
+            ok = self._set_control_center_toggle("wifi", desired_on=False)
+            if ok:
+                logger.info("WiFi confirmed off on %s", self.device.name)
             else:
-                # Fallback: tap the known WiFi coordinate area
-                # WiFi is next to airplane mode in the connectivity group
-                self.tap(int(w * 0.35), int(h * 0.18))
-                logger.warning("WiFi button not found by accessibility id, used coordinate tap on %s", self.device.name)
-                time.sleep(1.0)
-
-                # Re-check WiFi status after fallback tap
-                wifi_el_recheck = self.find_element("accessibility id", "wifi-button")
-                if wifi_el_recheck:
-                    el_id_recheck = wifi_el_recheck["ELEMENT"]
-                    try:
-                        resp = self.client.get(f"{self._s}/element/{el_id_recheck}/attribute/value", timeout=5)
-                        value_recheck = resp.json().get("value", "")
-                    except Exception:
-                        value_recheck = ""
-
-                    if "," in str(value_recheck) or "connected" in str(value_recheck).lower():
-                        logger.warning("WiFi still ON after fallback tap on %s — could not verify off", self.device.name)
-                        self.swipe(int(w * 0.5), int(h * 0.9), int(w * 0.5), int(h * 0.5), duration=0.3)
-                        time.sleep(0.5)
-                        return False
-                else:
-                    logger.warning("Cannot verify WiFi state after fallback tap on %s", self.device.name)
-                    self.swipe(int(w * 0.5), int(h * 0.9), int(w * 0.5), int(h * 0.5), duration=0.3)
-                    time.sleep(0.5)
-                    return False
-
-            # Close Control Center
-            self.swipe(int(w * 0.5), int(h * 0.9), int(w * 0.5), int(h * 0.5), duration=0.3)
-            time.sleep(0.5)
-            return True
-
+                logger.warning("Could not verify WiFi off on %s", self.device.name)
+            return ok
         except Exception:
             logger.error("Failed to ensure WiFi off on %s", self.device.name, exc_info=True)
-            try:
-                self.press_button("home")
-            except Exception:
-                pass
             return False
+        finally:
+            try:
+                if opened:
+                    self._close_control_center()
+            except Exception:
+                try:
+                    self.press_button("home")
+                except Exception:
+                    pass
+
+    def ensure_cellular_only(self) -> bool:
+        """Force the device into the expected network state: airplane off, Wi-Fi off."""
+        if not self.ensure_airplane_mode_off():
+            return False
+        return self.ensure_wifi_off()
 
     # --- Airplane mode (IP rotation) ---
 
@@ -467,73 +602,49 @@ class WDASession:
 
         Returns True if the toggle sequence completed without error.
         """
-        size = self.screen_size()
-        w, h = size["width"], size["height"]
+        if not self.ensure_airplane_mode_off():
+            logger.warning(
+                "Refusing airplane toggle on %s because baseline airplane-off state could not be verified",
+                self.device.name,
+            )
+            return False
 
+        opened = False
+        rotated = False
         try:
-            # Open Control Center — swipe down from top-right corner
-            self.swipe(int(w * 0.9), 0, int(w * 0.5), int(h * 0.5), duration=0.3)
-            time.sleep(1.5)
-
-            # Airplane mode button is in the top-left connectivity group
-            # Tap it to enable (cuts cellular + wifi)
-            airplane_el = self.find_element("accessibility id", "airplane-mode-button")
-            if airplane_el:
-                self.element_click(airplane_el["ELEMENT"])
-            else:
-                # Fallback: tap the known coordinate area for airplane mode
-                # Control Center connectivity group top-left quadrant
-                self.tap(int(w * 0.18), int(h * 0.18))
+            self._open_control_center()
+            opened = True
+            if not self._set_control_center_toggle("airplane", desired_on=True):
+                logger.warning("Could not verify airplane mode enabled on %s", self.device.name)
+                return False
             time.sleep(3.0)
-
-            # Tap again to disable airplane mode (cellular reconnects)
-            # Retry up to 3 times to ensure airplane mode is OFF
-            for attempt in range(3):
-                airplane_el = self.find_element("accessibility id", "airplane-mode-button")
-                if airplane_el:
-                    el_id = airplane_el["ELEMENT"]
-                    # Check if still enabled (value contains "1" or "On")
-                    attrs = self.wda.get(
-                        f"/session/{self.session_id}/element/{el_id}/attribute/value"
-                    ).json().get("value", "")
-                    if attrs and ("1" in str(attrs) or "On" in str(attrs)):
-                        self.element_click(el_id)
-                        time.sleep(2.0)
-                        continue  # re-check
-                    else:
-                        break  # airplane mode is off
-                else:
-                    self.tap(int(w * 0.18), int(h * 0.18))
-                    time.sleep(2.0)
-                    break
-
-            # Close Control Center — swipe up from bottom or tap empty area
-            time.sleep(0.5)
-            self.swipe(int(w * 0.5), int(h * 0.9), int(w * 0.5), int(h * 0.5), duration=0.3)
-            time.sleep(0.5)
-
-            # Wait for cellular to reconnect
-            time.sleep(wait_after)
-
-            logger.info("Airplane mode toggled on %s — IP rotated", self.device.name)
-            return True
-
+            if not self._set_control_center_toggle("airplane", desired_on=False):
+                logger.warning("Could not verify airplane mode disabled on %s", self.device.name)
+                return False
+            rotated = True
         except Exception:
             logger.error("Failed to toggle airplane mode on %s", self.device.name, exc_info=True)
-            # CRITICAL: try to ensure airplane mode is OFF before giving up
+        finally:
             try:
-                airplane_el = self.find_element("accessibility id", "airplane-mode-button")
-                if airplane_el:
-                    attrs = self.wda.get(
-                        f"/session/{self.session_id}/element/{airplane_el['ELEMENT']}/attribute/value"
-                    ).json().get("value", "")
-                    if attrs and ("1" in str(attrs) or "On" in str(attrs)):
-                        self.element_click(airplane_el["ELEMENT"])
-                        logger.info("Emergency airplane mode OFF on %s", self.device.name)
-                self.press_button("home")
+                if opened:
+                    self._close_control_center()
             except Exception:
-                pass
+                try:
+                    self.press_button("home")
+                except Exception:
+                    pass
+
+        time.sleep(wait_after)
+        if not self.ensure_cellular_only():
+            logger.warning(
+                "Airplane toggle on %s did not return to cellular-only state",
+                self.device.name,
+            )
             return False
+
+        if rotated:
+            logger.info("Airplane mode toggled on %s — IP rotated", self.device.name)
+        return rotated
 
 
 # --- Bundle IDs (canonical map — import from here) ---
