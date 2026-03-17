@@ -14,6 +14,8 @@ from sovi.device.account_creator import (
     _is_email_phone_screen,
     _generate_username,
     _pick_niche_for_platform,
+    _signup_instagram,
+    consume_last_account_creation_failure,
     create_account,
 )
 
@@ -216,3 +218,203 @@ class TestSignupTiktok:
 
         # Should have tapped at least once (signup page tap + use phone/email)
         assert wda.tap.call_count >= 2
+
+
+class TestCreateAccountFailures:
+    def test_records_install_failure_context(self):
+        wda = MagicMock()
+
+        with (
+            patch("time.sleep"),
+            patch("sovi.device.account_creator.delete_app"),
+            patch("sovi.device.account_creator.install_from_app_store", return_value=False),
+            patch("sovi.device.account_creator.sync_execute_one", return_value={"slug": "ai_storytelling"}),
+            patch("sovi.device.account_creator.events.emit"),
+        ):
+            result = create_account(
+                wda,
+                "instagram",
+                "niche-1",
+                "jamie@example.com",
+                "pw",
+                device_id="dev-1",
+            )
+
+        failure = consume_last_account_creation_failure()
+        assert result is None
+        assert failure is not None
+        assert failure.platform == "instagram"
+        assert failure.step == "install"
+        assert "Failed to install instagram app" in failure.reason
+
+    def test_retries_install_before_failing_account_creation(self):
+        wda = MagicMock()
+        emitted = []
+
+        with (
+            patch("time.sleep"),
+            patch("sovi.device.account_creator.delete_app", side_effect=[False, True]),
+            patch("sovi.device.account_creator.install_from_app_store", side_effect=[False, True]) as mock_install,
+            patch("sovi.device.account_creator._signup_instagram", return_value=True),
+            patch("sovi.device.account_creator.sync_execute_one", return_value={"slug": "ai_storytelling"}),
+            patch(
+                "sovi.device.account_creator.sync_execute",
+                return_value=[{"id": "acc-1", "platform": "instagram", "username": "user-1", "current_state": "created"}],
+            ),
+            patch("sovi.device.account_creator.encrypt", return_value="enc"),
+            patch("sovi.device.account_creator.events.emit", side_effect=lambda *args, **kwargs: emitted.append((args, kwargs))),
+        ):
+            result = create_account(
+                wda,
+                "instagram",
+                "niche-1",
+                "jamie@example.com",
+                "pw",
+                device_id="dev-1",
+            )
+
+        assert result is not None
+        assert mock_install.call_count == 2
+        assert wda.reset_to_home.call_count == 2
+        assert wda.reconnect.call_count == 2
+        assert any(args[2] == "app_delete_unverified" for args, _ in emitted)
+
+
+class TestSignupInstagram:
+    def test_uses_get_started_entrypoint(self):
+        wda = MagicMock()
+        auto = MagicMock()
+        wda.app_state.return_value = 4
+        wda.find_elements.return_value = []
+
+        def find_element_side_effect(using, value):
+            if using == "accessibility id" and value in {
+                "Get started",
+                "Create new account",
+                "Sign up with email",
+                "Next",
+                "Sign Up",
+                "Skip",
+            }:
+                return {"ELEMENT": value.lower().replace(" ", "-")}
+            if using == "predicate string" and 'type == "XCUIElementTypeTextField"' in value and '"email"' in value:
+                return {"ELEMENT": "email-field"}
+            if using == "predicate string" and 'type == "XCUIElementTypeTextField" AND (name CONTAINS "name"' in value:
+                return {"ELEMENT": "name-field"}
+            if using == "predicate string" and 'type == "XCUIElementTypeSecureTextField"' in value:
+                return {"ELEMENT": "pw-field"}
+            return None
+
+        wda.find_element.side_effect = find_element_side_effect
+
+        with (
+            patch("time.sleep"),
+            patch("sovi.device.account_creator.events.emit"),
+        ):
+            result = _signup_instagram(
+                wda,
+                auto,
+                "jamie@example.com",
+                "pw-123",
+                "jamie_writer",
+                None,
+                "dev-1",
+            )
+
+        assert result is True
+        wda.element_value.assert_any_call("email-field", "jamie@example.com")
+
+    def test_falls_back_to_mobile_placeholder_field_after_signup_entry(self):
+        wda = MagicMock()
+        auto = MagicMock()
+        wda.app_state.return_value = 4
+        wda.find_elements.return_value = []
+
+        def find_element_side_effect(using, value):
+            if using == "accessibility id" and value in {
+                "Create new account",
+                "Next",
+                "Sign Up",
+                "Skip",
+            }:
+                return {"ELEMENT": value.lower().replace(" ", "-")}
+            if using == "predicate string" and 'placeholderValue CONTAINS[c] "mobile"' in value:
+                return {"ELEMENT": "mobile-field"}
+            if using == "predicate string" and 'type == "XCUIElementTypeTextField" AND (name CONTAINS "name"' in value:
+                return {"ELEMENT": "name-field"}
+            if using == "predicate string" and 'type == "XCUIElementTypeSecureTextField"' in value:
+                return {"ELEMENT": "pw-field"}
+            return None
+
+        wda.find_element.side_effect = find_element_side_effect
+
+        with (
+            patch("time.sleep"),
+            patch("sovi.device.account_creator.events.emit"),
+        ):
+            result = _signup_instagram(
+                wda,
+                auto,
+                "jamie@example.com",
+                "pw-123",
+                "jamie_writer",
+                None,
+                "dev-1",
+            )
+
+        assert result is True
+        wda.element_value.assert_any_call("mobile-field", "jamie@example.com")
+
+    def test_reads_code_on_device_and_resumes_app(self):
+        wda = MagicMock()
+        auto = MagicMock()
+        wda.app_state.side_effect = [4, 1, 4]
+        wda.find_elements.return_value = []
+
+        def find_element_side_effect(using, value):
+            if using == "accessibility id" and value in {
+                "Get started",
+                "Create new account",
+                "Sign up with email",
+                "Next",
+                "Confirm",
+                "Sign Up",
+                "Skip",
+                "Home",
+            }:
+                return {"ELEMENT": value.lower().replace(" ", "-")}
+            if using == "predicate string" and 'type == "XCUIElementTypeTextField"' in value and '"email"' in value:
+                return {"ELEMENT": "email-field"}
+            if using == "predicate string" and 'type == "XCUIElementTypeTextField" AND (name CONTAINS "name"' in value:
+                return {"ELEMENT": "name-field"}
+            if using == "predicate string" and 'type == "XCUIElementTypeSecureTextField"' in value:
+                return {"ELEMENT": "pw-field"}
+            if using == "predicate string" and 'type == "XCUIElementTypeTextField" AND (name CONTAINS[c] "code"' in value:
+                return {"ELEMENT": "code-field"}
+            if using == "predicate string" and 'name CONTAINS[c] "code"' in value:
+                return {"ELEMENT": "code-prompt"}
+            return None
+
+        wda.find_element.side_effect = find_element_side_effect
+
+        with (
+            patch("time.sleep"),
+            patch("sovi.device.account_creator.read_verification_code", return_value="123456") as mock_read_code,
+            patch("sovi.device.account_creator.events.emit"),
+        ):
+            result = _signup_instagram(
+                wda,
+                auto,
+                "jamie@example.com",
+                "pw-123",
+                "jamie_writer",
+                None,
+                "dev-1",
+                email_account={"id": "mail-1", "provider": "mailtm"},
+            )
+
+        assert result is True
+        mock_read_code.assert_called_once()
+        assert wda.connect.called
+        wda.element_value.assert_any_call("code-field", "123456")
+        wda.element_value.assert_any_call("pw-field", "pw-123")

@@ -10,12 +10,15 @@ Coordinates are for iPhone 16 (393x852 points, 1179x2556 pixels, 3x scale).
 
 from __future__ import annotations
 
+from contextlib import suppress
 import io
 import logging
 import os
 import random
 import string
+import threading
 import time
+from dataclasses import dataclass, field
 from typing import Any
 from uuid import UUID
 
@@ -32,13 +35,211 @@ from sovi.auth.sms_verifier import cancel_verification, request_number, wait_for
 from sovi.crypto import encrypt
 from sovi.db import sync_execute, sync_execute_one
 from sovi.device.app_lifecycle import BUNDLES, delete_app, install_from_app_store
+from sovi.device.email_reader import read_verification_code
 from sovi.device.wda_client import DeviceAutomation, WDASession
 
 logger = logging.getLogger(__name__)
+INSTALL_ATTEMPTS = 3
 
 # Debug screenshot directory (disabled in production — set env SOVI_SIGNUP_DEBUG=1)
 _SIGNUP_DEBUG = os.environ.get("SOVI_SIGNUP_DEBUG", "0") == "1"
 _SIGNUP_SS_DIR = "/tmp/sovi_signup"
+_ACCOUNT_CREATION_STATE = threading.local()
+
+
+@dataclass(frozen=True)
+class AccountCreationFailure:
+    """Thread-local detail about the last account-creation failure."""
+
+    platform: str
+    step: str
+    reason: str
+    context: dict[str, Any] = field(default_factory=dict)
+
+
+def clear_last_account_creation_failure() -> None:
+    """Clear thread-local failure state before a new attempt."""
+    _ACCOUNT_CREATION_STATE.failure = None
+
+
+def get_last_account_creation_failure() -> AccountCreationFailure | None:
+    """Return the last failure recorded for the current thread."""
+    failure = getattr(_ACCOUNT_CREATION_STATE, "failure", None)
+    return failure if isinstance(failure, AccountCreationFailure) else None
+
+
+def consume_last_account_creation_failure() -> AccountCreationFailure | None:
+    """Return and clear the last failure recorded for the current thread."""
+    failure = get_last_account_creation_failure()
+    clear_last_account_creation_failure()
+    return failure
+
+
+def _record_account_creation_failure(
+    platform: str,
+    step: str,
+    reason: str,
+    **context: Any,
+) -> AccountCreationFailure:
+    """Store a structured failure reason for later propagation."""
+    failure = AccountCreationFailure(
+        platform=platform,
+        step=step,
+        reason=reason,
+        context=context,
+    )
+    _ACCOUNT_CREATION_STATE.failure = failure
+    return failure
+
+
+def _tap_any(wda: WDASession, labels: list[str]) -> bool:
+    """Tap the first visible element matching one of the supplied labels."""
+    for label in labels:
+        el = wda.find_element("accessibility id", label)
+        if el and el.get("ELEMENT"):
+            wda.element_click(el["ELEMENT"])
+            return True
+    for label in labels:
+        el = wda.find_element(
+            "predicate string",
+            f'name == "{label}" OR label == "{label}"',
+        )
+        if el and el.get("ELEMENT"):
+            wda.element_click(el["ELEMENT"])
+            return True
+    return False
+
+
+def _reconnect_wda_session(wda: WDASession) -> bool:
+    """Best-effort WDA reconnect after app handoffs invalidate the session."""
+    try:
+        wda.disconnect()
+    except Exception:
+        pass
+    try:
+        wda.connect()
+        return True
+    except Exception:
+        return False
+
+
+def _resume_app_after_email_lookup(
+    wda: WDASession,
+    bundle_id: str,
+    auto: DeviceAutomation,
+) -> bool:
+    """Return to the signup app after reading verification email in Safari."""
+    try:
+        if wda.app_state(bundle_id) == 4:
+            return True
+    except Exception:
+        pass
+
+    if not _reconnect_wda_session(wda):
+        return False
+
+    try:
+        wda.launch_app(bundle_id)
+        time.sleep(3)
+        auto.dismiss_popups(max_attempts=2)
+        return wda.app_state(bundle_id) == 4
+    except Exception:
+        return False
+
+
+def _find_instagram_code_field(wda: WDASession) -> dict | None:
+    """Locate Instagram's confirmation-code field if present."""
+    predicates = [
+        'type == "XCUIElementTypeTextField" AND '
+        '(name CONTAINS[c] "code" OR label CONTAINS[c] "code" OR value CONTAINS[c] "code")',
+        'type == "XCUIElementTypeTextField" AND '
+        '(name CONTAINS[c] "confirmation" OR label CONTAINS[c] "confirmation")',
+        'type == "XCUIElementTypeTextField"',
+    ]
+    for predicate in predicates:
+        field = wda.find_element("predicate string", predicate)
+        if field:
+            return field
+    return None
+
+
+def _find_instagram_email_field(
+    wda: WDASession,
+    *,
+    allow_generic: bool = False,
+) -> dict | None:
+    """Locate Instagram's email or phone entry field across onboarding variants."""
+    predicates = [
+        'type == "XCUIElementTypeTextField" AND '
+        '(name CONTAINS[c] "email" OR label CONTAINS[c] "email" '
+        'OR placeholderValue CONTAINS[c] "email" OR value CONTAINS[c] "email")',
+        'type == "XCUIElementTypeTextField" AND '
+        '(name CONTAINS[c] "phone" OR label CONTAINS[c] "phone" '
+        'OR name CONTAINS[c] "mobile" OR label CONTAINS[c] "mobile" '
+        'OR placeholderValue CONTAINS[c] "phone" OR placeholderValue CONTAINS[c] "mobile" '
+        'OR value CONTAINS[c] "phone" OR value CONTAINS[c] "mobile")',
+    ]
+    if allow_generic:
+        predicates.append('type == "XCUIElementTypeTextField"')
+
+    for predicate in predicates:
+        field = wda.find_element("predicate string", predicate)
+        if field:
+            return field
+    return None
+
+
+def _read_platform_code_on_device(
+    wda: WDASession,
+    email_account: dict[str, Any] | None,
+    platform: str,
+    *,
+    device_id: str | None,
+    timeout: int,
+) -> str | None:
+    """Read a verification code through the phone when an email account row is available."""
+    if email_account:
+        return read_verification_code(
+            wda,
+            email_account,
+            platform,
+            device_id=device_id,
+            timeout=timeout,
+        )
+    return None
+
+
+def _emit_signup_exception(
+    platform: str,
+    email: str,
+    *,
+    step: str,
+    device_id: str | None,
+    username: str | None = None,
+) -> None:
+    """Record a signup exception with step context for task diagnostics."""
+    message = f"{platform} signup exception at {step} for {email}"
+    context = {
+        "platform": platform,
+        "email": email,
+        "step": step,
+    }
+    if username:
+        context["username"] = username
+    _record_account_creation_failure(
+        platform,
+        step,
+        message,
+        **context,
+    )
+    events.emit(
+        "account",
+        "error",
+        "signup_exception",
+        message,
+        device_id=device_id,
+        context=context,
+    )
 
 
 ## -- Screenshot analysis for TikTok coordinate-based signup -- ##
@@ -233,6 +434,7 @@ def create_account(
     email: str,
     password: str,
     *,
+    email_account: dict[str, Any] | None = None,
     imap_config: Any = None,
     email_password: str | None = None,
     device_id: str | None = None,
@@ -252,6 +454,7 @@ def create_account(
 
     Returns the created account dict, or None on failure.
     """
+    clear_last_account_creation_failure()
     niche = sync_execute_one("SELECT * FROM niches WHERE id = %s", (str(niche_id),))
     niche_slug = niche["slug"] if niche else "unknown"
     username = _generate_username(niche_slug)
@@ -262,36 +465,102 @@ def create_account(
                 device_id=device_id,
                 context={"platform": platform, "niche": niche_slug, "email": email})
 
-    # Step 1: Delete app for clean IDFV
-    delete_app(wda, platform, device_id=device_id)
-    time.sleep(2)
+    # Step 1-2: Delete app for clean IDFV, then install fresh.
+    installed = False
+    for attempt in range(1, INSTALL_ATTEMPTS + 1):
+        deleted = delete_app(wda, platform, device_id=device_id)
+        time.sleep(2)
 
-    # Step 2: Install fresh
-    if not install_from_app_store(wda, platform, device_id=device_id):
+        if not deleted:
+            events.emit(
+                "account",
+                "warning",
+                "app_delete_unverified",
+                f"Could not verify {platform} app deletion before reinstall",
+                device_id=device_id,
+                context={"platform": platform, "attempt": attempt, "username": username},
+            )
+
+        with suppress(Exception):
+            wda.reset_to_home()
+        with suppress(Exception):
+            wda.reconnect()
+        time.sleep(1)
+
+        if install_from_app_store(wda, platform, device_id=device_id):
+            installed = True
+            break
+
+        logger.warning(
+            "Install attempt %d/%d failed for %s account creation",
+            attempt,
+            INSTALL_ATTEMPTS,
+            platform,
+        )
+        if attempt < INSTALL_ATTEMPTS:
+            events.emit(
+                "account",
+                "warning",
+                "install_retrying",
+                f"Retrying {platform} app install for account creation",
+                device_id=device_id,
+                context={"platform": platform, "attempt": attempt + 1, "username": username},
+            )
+            time.sleep(2)
+
+    if not installed:
+        failure = _record_account_creation_failure(
+            platform,
+            "install",
+            f"Failed to install {platform} app for account creation",
+            username=username,
+        )
         events.emit("account", "error", "account_creation_failed",
-                    f"Failed to install {platform} app for account creation",
+                    failure.reason,
                     device_id=device_id,
-                    context={"platform": platform, "step": "install"})
+                    context={"platform": platform, "step": failure.step, "username": username})
         return None
 
     time.sleep(3)
 
     # Step 3-7: Platform-specific signup
     if platform == "tiktok":
-        success = _signup_tiktok(wda, auto, email, password, username, imap_config, device_id, email_password=email_password)
+        success = _signup_tiktok(
+            wda, auto, email, password, username, imap_config, device_id,
+            email_password=email_password, email_account=email_account,
+        )
     elif platform == "instagram":
-        success = _signup_instagram(wda, auto, email, password, username, imap_config, device_id, email_password=email_password)
+        success = _signup_instagram(
+            wda, auto, email, password, username, imap_config, device_id,
+            email_password=email_password, email_account=email_account,
+        )
     elif platform in ("x_twitter", "twitter"):
-        success = _signup_x_twitter(wda, auto, email, password, username, imap_config, device_id, email_password=email_password)
+        success = _signup_x_twitter(
+            wda, auto, email, password, username, imap_config, device_id,
+            email_password=email_password, email_account=email_account,
+        )
     else:
         logger.error("Unsupported platform for signup: %s", platform)
+        _record_account_creation_failure(
+            platform,
+            "platform",
+            f"Unsupported platform for signup: {platform}",
+            username=username,
+        )
         return None
 
     if not success:
+        failure = get_last_account_creation_failure()
+        context = {"platform": platform, "username": username, "step": "signup"}
+        message = f"Signup flow failed for {platform}/{username}"
+        if failure:
+            context["step"] = failure.step
+            context.update(failure.context)
+            message = failure.reason
         events.emit("account", "error", "account_creation_failed",
-                    f"Signup flow failed for {platform}/{username}",
+                    message,
                     device_id=device_id,
-                    context={"platform": platform, "username": username, "step": "signup"})
+                    context=context)
         return None
 
     # TODO: TOTP enrollment should happen via platform settings when 2FA is
@@ -317,7 +586,13 @@ def create_account(
     )
 
     if not rows:
-        logger.error("Failed to insert account into DB")
+        failure = _record_account_creation_failure(
+            platform,
+            "store_account",
+            "Failed to insert account into DB",
+            username=username,
+        )
+        logger.error(failure.reason)
         return None
 
     account = rows[0]
@@ -357,6 +632,7 @@ def _signup_tiktok(
     device_id: str | None,
     *,
     email_password: str | None = None,
+    email_account: dict[str, Any] | None = None,
 ) -> bool:
     """TikTok signup flow — coordinate-based with screenshot verification.
 
@@ -378,6 +654,7 @@ def _signup_tiktok(
             "Next" button: ~(196, 475) or bottom of screen
     """
     step_n = 0
+    step = "launch"
 
     def _ss(name: str) -> bytes:
         """Take screenshot, optionally save debug copy, return PNG bytes."""
@@ -389,6 +666,7 @@ def _signup_tiktok(
 
     try:
         # -- Step 1: Fresh launch --
+        step = "launch"
         logger.info("TikTok signup step 1: Launch app")
         wda.terminate_app(BUNDLES["tiktok"])
         time.sleep(3)
@@ -398,6 +676,7 @@ def _signup_tiktok(
         _ss("launch")
 
         # -- Step 2: Tap "Sign up" and verify we reached signup page --
+        step = "navigate_to_signup"
         logger.info("TikTok signup step 2: Navigate to signup page")
         signup_red_y = None
         for attempt in range(3):
@@ -419,6 +698,7 @@ def _signup_tiktok(
             return False
 
         # -- Step 3: Tap "Use phone or email" (red button) --
+        step = "select_email_signup"
         logger.info("TikTok signup step 3: Tap 'Use phone or email'")
         tap_y = signup_red_y or 243
         wda.tap(196, tap_y)
@@ -438,6 +718,7 @@ def _signup_tiktok(
             logger.warning("Could not verify birthday page, continuing anyway")
 
         # -- Step 4: Set birthday (year → ~1995-2002) --
+        step = "birthday"
         logger.info("TikTok signup step 4: Set birthday year")
         target_year = random.randint(1995, 2002)
         # Year picker: x=357 points, center at y=654 points
@@ -481,6 +762,7 @@ def _signup_tiktok(
         _ss("after_continue")
 
         # -- Step 6: Email entry --
+        step = "email"
         logger.info("TikTok signup step 6: Enter email")
         time.sleep(3)
 
@@ -539,6 +821,7 @@ def _signup_tiktok(
         _ss("after_email_next")
 
         # -- Step 7: CAPTCHA handling --
+        step = "captcha"
         logger.info("TikTok signup step 7: CAPTCHA check")
         no_captcha_count = 0  # Wait for CAPTCHA to appear (delayed popup)
 
@@ -625,17 +908,33 @@ def _signup_tiktok(
         _dismiss_tiktok_alerts(wda)
 
         # -- Step 8: Email verification code --
+        step = "verification"
         logger.info("TikTok signup step 8: Email verification")
         _ss("verification_screen")
 
         # Poll for verification code via IMAP or mail.tm API
-        code = None
-        if imap_config:
-            code = _poll_stub(imap_config, "tiktok", target_email=email, timeout=120)  # TODO: Replace with on-device email_reader.py
-        elif email_password:
-            code = _poll_stub(email, email_password, "tiktok", timeout=120)  # TODO: Replace with on-device email_reader.py
-        else:
+        code = _read_platform_code_on_device(
+            wda,
+            email_account,
+            "tiktok",
+            device_id=device_id,
+            timeout=120,
+        )
+        if not code and imap_config:
+            code = _poll_stub(imap_config, "tiktok", target_email=email, timeout=120)
+        elif not code and email_password:
+            code = _poll_stub(email, email_password, "tiktok", timeout=120)
+        elif not code and not email_account:
             logger.warning("No email verification method available")
+
+        if email_account and not _resume_app_after_email_lookup(wda, BUNDLES["tiktok"], auto):
+            _record_account_creation_failure(
+                "tiktok",
+                "verification_resume",
+                "Lost the TikTok session after reading the verification email",
+                email=email,
+            )
+            return False
 
         if code:
             logger.info("Email verification code received: %s", code)
@@ -676,6 +975,7 @@ def _signup_tiktok(
         _ss("after_email_verify")
 
         # -- Step 9: Password entry --
+        step = "password"
         logger.info("TikTok signup step 9: Create password")
         pw_field = wda.find_element(
             "predicate string",
@@ -715,6 +1015,7 @@ def _signup_tiktok(
         _ss("after_password_next")
 
         # -- Step 10: SMS verification (if required) --
+        step = "sms"
         logger.info("TikTok signup step 10: SMS check")
         sms_el = wda.find_element(
             "predicate string",
@@ -759,6 +1060,7 @@ def _signup_tiktok(
         _ss("after_sms")
 
         # -- Step 11: Username / interests / onboarding --
+        step = "post_signup"
         logger.info("TikTok signup step 11: Post-signup screens")
         time.sleep(3)
 
@@ -800,10 +1102,13 @@ def _signup_tiktok(
 
     except Exception:
         logger.error("TikTok signup failed for %s", email, exc_info=True)
-        events.emit("account", "error", "signup_exception",
-                    f"TikTok signup exception for {email}",
-                    device_id=device_id,
-                    context={"platform": "tiktok", "email": email})
+        _emit_signup_exception(
+            "tiktok",
+            email,
+            step=step,
+            device_id=device_id,
+            username=username,
+        )
         return False
 
 
@@ -817,105 +1122,201 @@ def _signup_instagram(
     device_id: str | None,
     *,
     email_password: str | None = None,
+    email_account: dict[str, Any] | None = None,
 ) -> bool:
     """Instagram signup flow."""
+    step = "launch"
+
+    def fail(step_name: str, reason: str, **context: Any) -> bool:
+        logger.error(reason)
+        _record_account_creation_failure(
+            "instagram",
+            step_name,
+            reason,
+            email=email,
+            username=username,
+            **context,
+        )
+        events.emit(
+            "account",
+            "error",
+            "signup_step_failed",
+            reason,
+            device_id=device_id,
+            context={
+                "platform": "instagram",
+                "email": email,
+                "username": username,
+                "step": step_name,
+                **context,
+            },
+        )
+        return False
+
     try:
+        step = "launch"
         wda.launch_app(BUNDLES["instagram"])
         time.sleep(random.uniform(3, 5))
         auto.dismiss_popups(max_attempts=3)
 
-        # Look for "Create new account" / "Join Instagram"
-        for label in ["Create new account", "Join Instagram", "Sign Up", "Sign up"]:
-            el = wda.find_element("accessibility id", label)
-            if el:
-                wda.element_click(el["ELEMENT"])
-                time.sleep(2)
+        if not _resume_app_after_email_lookup(wda, BUNDLES["instagram"], auto):
+            return fail("launch", "Instagram did not reach the foreground after launch")
+
+        # Instagram may open on either a direct signup screen or the
+        # login landing page. Drive toward the email/phone entry form and
+        # tolerate the intermediate "What's your mobile number?" variant.
+        step = "entrypoint"
+        email_field = None
+        entered_signup = False
+        for _ in range(6):
+            email_field = _find_instagram_email_field(wda, allow_generic=entered_signup)
+            if email_field:
                 break
 
-        # Enter email
-        email_field = wda.find_element(
-            "predicate string",
-            'type == "XCUIElementTypeTextField" AND (name CONTAINS "email" OR name CONTAINS "Email" OR name CONTAINS "phone")'
-        )
-        if email_field:
-            wda.element_click(email_field["ELEMENT"])
-            time.sleep(0.3)
-            wda.element_value(email_field["ELEMENT"], email)
+            if _tap_any(wda, ["Sign up with email", "Use email", "Email"]):
+                entered_signup = True
+                time.sleep(2)
+                continue
+
+            if _tap_any(wda, ["Create new account", "Sign Up", "Sign up"]):
+                entered_signup = True
+                time.sleep(2)
+                continue
+
+            if _tap_any(wda, ["Get started"]):
+                entered_signup = True
+                time.sleep(2)
+                continue
+
+            auto.dismiss_popups(max_attempts=1)
             time.sleep(1)
 
+        # Enter email
+        step = "email"
+        if not email_field:
+            return fail("email", "Instagram email field not found")
+        wda.element_click(email_field["ELEMENT"])
+        time.sleep(0.3)
+        wda.element_value(email_field["ELEMENT"], email)
+        time.sleep(1)
+
         # Next
-        for label in ["Next", "Continue"]:
-            el = wda.find_element("accessibility id", label)
-            if el:
-                wda.element_click(el["ELEMENT"])
-                time.sleep(3)
-                break
+        if not _tap_any(wda, ["Next", "Continue"]):
+            return fail("email_submit", "Instagram email submission button not found")
+        time.sleep(3)
 
-        # Confirmation code from email (IMAP or mail.tm API)
-        code = None
-        if imap_config:
-            code = _poll_stub(imap_config, "instagram", target_email=email, timeout=90)  # TODO: Replace with on-device email_reader.py
-        elif email_password:
-            code = _poll_stub(email, email_password, "instagram", timeout=90)  # TODO: Replace with on-device email_reader.py
-
-        if code:
-            code_field = wda.find_element(
-                "predicate string",
-                'type == "XCUIElementTypeTextField"'
-            )
-            if code_field:
-                wda.element_value(code_field["ELEMENT"], code)
-                time.sleep(1)
-                for label in ["Next", "Confirm", "Continue"]:
-                    el = wda.find_element("accessibility id", label)
-                    if el:
-                        wda.element_click(el["ELEMENT"])
-                        time.sleep(3)
-                        break
-
-        # Full name
         name_field = wda.find_element(
             "predicate string",
             'type == "XCUIElementTypeTextField" AND (name CONTAINS "name" OR name CONTAINS "Name")'
         )
-        if name_field:
-            display_name = username.replace("_", " ").title()
-            wda.element_value(name_field["ELEMENT"], display_name)
-            time.sleep(1)
-
-        # Password
         pw_field = wda.find_element(
             "predicate string",
             'type == "XCUIElementTypeSecureTextField"'
         )
-        if pw_field:
-            wda.element_click(pw_field["ELEMENT"])
+        verification_prompt = wda.find_element(
+            "predicate string",
+            'name CONTAINS[c] "code" OR label CONTAINS[c] "code" OR value CONTAINS[c] "code"'
+        )
+
+        # Confirmation code from email on-device when Instagram asks for it.
+        step = "verification"
+        needs_verification = bool(verification_prompt) or (not name_field and not pw_field)
+        if needs_verification:
+            code = _read_platform_code_on_device(
+                wda,
+                email_account,
+                "instagram",
+                device_id=device_id,
+                timeout=90,
+            )
+            if not code and imap_config:
+                code = _poll_stub(imap_config, "instagram", target_email=email, timeout=90)
+            elif not code and email_password:
+                code = _poll_stub(email, email_password, "instagram", timeout=90)
+
+            if not code:
+                return fail(
+                    "verification",
+                    "Instagram requested a confirmation code but no code was retrieved",
+                )
+            if email_account and not _resume_app_after_email_lookup(wda, BUNDLES["instagram"], auto):
+                return fail(
+                    "verification_resume",
+                    "Lost the Instagram session after reading the verification email",
+                )
+
+            code_field = _find_instagram_code_field(wda)
+            if not code_field or not code_field.get("ELEMENT"):
+                return fail(
+                    "verification_field",
+                    "Instagram confirmation code field not found after email lookup",
+                )
+            wda.element_click(code_field["ELEMENT"])
             time.sleep(0.3)
-            wda.element_value(pw_field["ELEMENT"], password)
+            wda.element_value(code_field["ELEMENT"], code)
             time.sleep(1)
+            if not _tap_any(wda, ["Next", "Confirm", "Continue"]):
+                return fail(
+                    "verification_submit",
+                    "Instagram confirmation code submit button not found",
+                )
+            time.sleep(3)
+
+            name_field = wda.find_element(
+                "predicate string",
+                'type == "XCUIElementTypeTextField" AND (name CONTAINS "name" OR name CONTAINS "Name")'
+            )
+            pw_field = wda.find_element(
+                "predicate string",
+                'type == "XCUIElementTypeSecureTextField"'
+            )
+
+        # Full name
+        step = "name"
+        if name_field:
+            display_name = username.replace("_", " ").title()
+            wda.element_click(name_field["ELEMENT"])
+            time.sleep(0.3)
+            wda.element_value(name_field["ELEMENT"], display_name)
+            time.sleep(1)
+        elif not pw_field:
+            return fail(
+                "profile_details",
+                "Instagram did not advance to a profile details screen after email submission",
+            )
+
+        # Password
+        step = "password"
+        if not pw_field:
+            pw_field = wda.find_element(
+                "predicate string",
+                'type == "XCUIElementTypeSecureTextField"'
+            )
+        if not pw_field:
+            return fail("password", "Instagram password field not found")
+        wda.element_click(pw_field["ELEMENT"])
+        time.sleep(0.3)
+        wda.element_value(pw_field["ELEMENT"], password)
+        time.sleep(1)
 
         # Next
-        for label in ["Next", "Continue", "Sign Up"]:
-            el = wda.find_element("accessibility id", label)
-            if el:
-                wda.element_click(el["ELEMENT"])
-                time.sleep(3)
-                break
+        if not _tap_any(wda, ["Next", "Continue", "Sign Up"]):
+            return fail("password_submit", "Instagram password submission button not found")
+        time.sleep(3)
 
         # Birthday
+        step = "birthday"
         # Instagram may show a birthday picker — set adult DOB
         pickers = wda.find_elements("class chain", "**/XCUIElementTypePickerWheel")
         if pickers:
             # Just set a reasonable adult date
-            for label in ["Next", "Set Date", "Continue"]:
-                el = wda.find_element("accessibility id", label)
-                if el:
-                    wda.element_click(el["ELEMENT"])
-                    time.sleep(2)
-                    break
+            if not _tap_any(wda, ["Next", "Set Date", "Continue"]):
+                return fail("birthday", "Instagram birthday step could not be submitted")
+            time.sleep(2)
 
         # Username suggestion — Instagram often auto-suggests
         # Accept or change to our generated one
+        step = "username"
         username_field = wda.find_element(
             "predicate string",
             'type == "XCUIElementTypeTextField" AND (name CONTAINS "username" OR name CONTAINS "Username")'
@@ -926,30 +1327,50 @@ def _signup_instagram(
             # Clear and type our username
             wda.element_value(username_field["ELEMENT"], username)
             time.sleep(1)
-            for label in ["Next", "Continue"]:
-                el = wda.find_element("accessibility id", label)
-                if el:
-                    wda.element_click(el["ELEMENT"])
-                    time.sleep(3)
-                    break
+            if not _tap_any(wda, ["Next", "Continue"]):
+                return fail("username", "Instagram username submission button not found")
+            time.sleep(3)
 
         # Handle post-signup screens
+        step = "post_signup"
         auto.dismiss_popups(max_attempts=5)
         time.sleep(2)
 
         # Skip profile photo, contacts, etc.
+        saw_post_signup_marker = False
         for label in ["Skip", "Not Now", "Not now", "Maybe Later"]:
             el = wda.find_element("accessibility id", label)
             if el:
                 wda.element_click(el["ELEMENT"])
                 time.sleep(2)
+                saw_post_signup_marker = True
 
         auto.dismiss_popups(max_attempts=3)
-        logger.info("Instagram signup flow completed for %s", email)
-        return True
+        for label in ["Home", "Search", "Reels", "Profile"]:
+            if wda.find_element("accessibility id", label):
+                logger.info("Instagram signup flow completed for %s", email)
+                return True
+        if saw_post_signup_marker:
+            logger.info("Instagram signup completed after onboarding screens for %s", email)
+            return True
+        if wda.app_state(BUNDLES["instagram"]) == 4:
+            logger.info("Instagram signup likely completed for %s", email)
+            return True
+
+        return fail(
+            "post_signup",
+            "Instagram signup ended without a verifiable logged-in state",
+        )
 
     except Exception:
         logger.error("Instagram signup failed for %s", email, exc_info=True)
+        _emit_signup_exception(
+            "instagram",
+            email,
+            step=step,
+            device_id=device_id,
+            username=username,
+        )
         return False
 
 
@@ -963,18 +1384,22 @@ def _signup_x_twitter(
     device_id: str | None,
     *,
     email_password: str | None = None,
+    email_account: dict[str, Any] | None = None,
 ) -> bool:
     """X/Twitter signup flow via the X app.
 
     Flow: Launch → Create account → Name + Email + DOB → Next →
           CAPTCHA → Email verification → Password → Username → Done
     """
+    step = "launch"
     try:
+        step = "launch"
         wda.launch_app(BUNDLES["x_twitter"])
         time.sleep(random.uniform(5, 8))
         auto.dismiss_popups(max_attempts=3)
 
         # Look for "Create account" button
+        step = "entrypoint"
         for label in ["Create account", "Sign up", "Create Account"]:
             el = wda.find_element("accessibility id", label)
             if el:
@@ -994,6 +1419,7 @@ def _signup_x_twitter(
         auto.dismiss_popups(max_attempts=2)
 
         # Name field
+        step = "name"
         name_field = wda.find_element(
             "predicate string",
             'type == "XCUIElementTypeTextField" AND (name CONTAINS[c] "name" OR name CONTAINS[c] "Name")'
@@ -1006,6 +1432,7 @@ def _signup_x_twitter(
             time.sleep(1)
 
         # Email field — X might show phone first, need to switch to email
+        step = "email"
         email_link = wda.find_element(
             "predicate string",
             'name CONTAINS[c] "use email instead" OR name CONTAINS[c] "email"'
@@ -1025,6 +1452,7 @@ def _signup_x_twitter(
             time.sleep(1)
 
         # Date of birth — X uses picker wheels
+        step = "birthday"
         pickers = wda.find_elements("class chain", "**/XCUIElementTypePickerWheel")
         if pickers:
             # Just swipe the year picker to set adult age
@@ -1038,6 +1466,7 @@ def _signup_x_twitter(
             time.sleep(1)
 
         # Next button
+        step = "details_submit"
         for label in ["Next", "Continue"]:
             el = wda.find_element("accessibility id", label)
             if el:
@@ -1048,6 +1477,7 @@ def _signup_x_twitter(
         auto.dismiss_popups(max_attempts=2)
 
         # Confirmation / "Sign up" button
+        step = "signup_submit"
         for label in ["Sign up", "Sign Up", "Create account", "Next"]:
             el = wda.find_element("accessibility id", label)
             if el:
@@ -1056,16 +1486,33 @@ def _signup_x_twitter(
                 break
 
         # CAPTCHA handling — X uses arkose labs
+        step = "captcha"
         time.sleep(5)
         auto.dismiss_popups(max_attempts=3)
 
         # Email verification code
+        step = "verification"
         logger.info("X/Twitter signup: waiting for email verification code")
-        code = None
-        if imap_config:
-            code = _poll_stub(imap_config, "x_twitter", target_email=email, timeout=120)  # TODO: Replace with on-device email_reader.py
-        elif email_password:
-            code = _poll_stub(email, email_password, "x_twitter", timeout=120)  # TODO: Replace with on-device email_reader.py
+        code = _read_platform_code_on_device(
+            wda,
+            email_account,
+            "x_twitter",
+            device_id=device_id,
+            timeout=120,
+        )
+        if not code and imap_config:
+            code = _poll_stub(imap_config, "x_twitter", target_email=email, timeout=120)
+        elif not code and email_password:
+            code = _poll_stub(email, email_password, "x_twitter", timeout=120)
+
+        if email_account and not _resume_app_after_email_lookup(wda, BUNDLES["x_twitter"], auto):
+            _record_account_creation_failure(
+                "x_twitter",
+                "verification_resume",
+                "Lost the X session after reading the verification email",
+                email=email,
+            )
+            return False
 
         if code:
             logger.info("X verification code received: %s", code)
@@ -1086,6 +1533,7 @@ def _signup_x_twitter(
             logger.warning("No X verification code received")
 
         # Password
+        step = "password"
         pw_field = wda.find_element(
             "predicate string",
             'type == "XCUIElementTypeSecureTextField"'
@@ -1103,6 +1551,7 @@ def _signup_x_twitter(
                     break
 
         # Username — X may suggest one or let you pick
+        step = "username"
         username_field = wda.find_element(
             "predicate string",
             'type == "XCUIElementTypeTextField" AND (name CONTAINS[c] "username" OR name CONTAINS[c] "handle")'
@@ -1120,6 +1569,7 @@ def _signup_x_twitter(
                     break
 
         # Skip through onboarding
+        step = "post_signup"
         for _ in range(5):
             dismissed = False
             for label in ["Skip", "Not now", "Skip for now", "Maybe later",
@@ -1139,6 +1589,13 @@ def _signup_x_twitter(
 
     except Exception:
         logger.error("X/Twitter signup failed for %s", email, exc_info=True)
+        _emit_signup_exception(
+            "x_twitter",
+            email,
+            step=step,
+            device_id=device_id,
+            username=username,
+        )
         return False
 
 

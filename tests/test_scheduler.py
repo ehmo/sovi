@@ -539,6 +539,28 @@ class TestSeederIteration:
         mock_wait.assert_called_once_with(60)
         assert dt.error == "cellular_enforcement_failed"
 
+    def test_marks_seeder_as_executing_after_cellular_enforcement(self):
+        sched = _make_scheduler()
+        dt = _make_device_thread()
+
+        from sovi.device.wda_client import WDADevice
+
+        device = WDADevice(name="test", udid="abc123", wda_port=8100)
+        mock_session = MagicMock()
+        mock_session.ensure_cellular_only.return_value = True
+
+        def fake_run_cycle(*_args, **_kwargs):
+            assert dt.current_task == "seeder:executing"
+            return None
+
+        with (
+            patch("sovi.device.scheduler.WDASession", return_value=mock_session),
+            patch("sovi.device.scheduler.run_seeder_cycle", side_effect=fake_run_cycle),
+            patch.object(sched._stop_event, "wait"),
+            patch(_EVENTS_EMIT),
+        ):
+            sched._run_seeder_iteration(device, dt)
+
 
 class TestWaitForWda:
     def test_read_timeout_is_treated_as_busy(self):
@@ -585,16 +607,85 @@ class TestWaitForWda:
 
         with (
             patch.object(sched, "_wait_for_wda", return_value=None),
-            patch("sovi.device.scheduler.update_heartbeat"),
+            patch("sovi.device.scheduler.update_heartbeat") as mock_heartbeat,
             patch("sovi.device.scheduler.set_device_status") as mock_set_status,
             patch(_EVENTS_EMIT) as mock_emit,
             patch.object(sched._stop_event, "wait", side_effect=stop_wait),
         ):
             sched._device_loop(device_row, dt)
 
+        mock_heartbeat.assert_not_called()
         mock_set_status.assert_not_called()
         assert not any(call.args[2] == "device_disconnected" for call in mock_emit.call_args_list)
 
+    def test_untrusted_wda_emits_setup_required_and_backs_off(self):
+        from sovi.device.service_diagnostics import WDAFailureDiagnostic
+
+        sched = _make_scheduler()
+        dt = _make_device_thread(device_id="dev-1", device_name="test-phone")
+        dt.running = True
+        device_row = {
+            "id": "dev-1",
+            "name": "test-phone",
+            "udid": "abc123",
+            "wda_port": 8100,
+        }
+        diagnostic = WDAFailureDiagnostic(
+            reason="wda_certificate_untrusted",
+            summary="WDA cannot launch because the developer certificate is not trusted",
+            hint="Trust the certificate, then reload com.sovi.wda-test-phone",
+            log_path="/tmp/com.sovi.wda-test-phone.err",
+            launchd_label="com.sovi.wda-test-phone",
+            retry_after_seconds=900,
+            manual_action_required=True,
+        )
+        waits: list[int] = []
+
+        def stop_wait(seconds):
+            waits.append(seconds)
+            sched._stop_event.set()
+            return True
+
+        with (
+            patch.object(sched, "_wait_for_wda", return_value=False),
+            patch("sovi.device.scheduler.diagnose_wda_failure", return_value=diagnostic),
+            patch("sovi.device.scheduler.update_heartbeat") as mock_heartbeat,
+            patch("sovi.device.scheduler.set_device_status") as mock_set_status,
+            patch(_EVENTS_EMIT) as mock_emit,
+            patch.object(sched._stop_event, "wait", side_effect=stop_wait),
+        ):
+            sched._device_loop(device_row, dt)
+
+        mock_heartbeat.assert_not_called()
+        assert dt.error == "wda_certificate_untrusted"
+        assert waits == [900]
+        mock_set_status.assert_called_once_with("dev-1", "disconnected")
+        assert any(call.args[2] == "device_setup_required" for call in mock_emit.call_args_list)
+
+    def test_ready_wda_updates_heartbeat(self):
+        sched = _make_scheduler()
+        dt = _make_device_thread(device_id="dev-1", device_name="test-phone")
+        dt.running = True
+        device_row = {
+            "id": "dev-1",
+            "name": "test-phone",
+            "udid": "abc123",
+            "wda_port": 8100,
+        }
+
+        def stop_wait(_seconds):
+            sched._stop_event.set()
+            return True
+
+        with (
+            patch.object(sched, "_wait_for_wda", return_value=True),
+            patch("sovi.device.scheduler.update_heartbeat") as mock_heartbeat,
+            patch("sovi.device.scheduler.get_current_role", return_value=None),
+            patch.object(sched._stop_event, "wait", side_effect=stop_wait),
+        ):
+            sched._device_loop(device_row, dt)
+
+        mock_heartbeat.assert_called_once_with("dev-1")
 
 # --- Phase mapping ---
 

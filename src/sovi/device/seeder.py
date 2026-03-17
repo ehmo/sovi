@@ -15,6 +15,7 @@ All persona-facing traffic goes through the phone's cellular connection.
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import logging
 import random
 import threading
@@ -42,6 +43,54 @@ SEEDER_COOLDOWN_MIN = 45
 SEEDER_COOLDOWN_MAX = 120
 # Extra cooldown for email creation (ProtonMail rate limits)
 EMAIL_COOLDOWN_EXTRA = 30
+_GENERIC_FAILURE_EVENTS = {
+    "account_creation_failed",
+    "persona_account_creation_failed",
+    "seeder_task_failed",
+}
+
+
+def _format_failure_reason(event_row: dict[str, Any]) -> str:
+    """Turn a recent error event into a readable task failure reason."""
+    event_type = str(event_row.get("event_type") or "task_failed")
+    message = str(event_row.get("message") or event_type)
+    context = event_row.get("context")
+    if not isinstance(context, dict):
+        context = {}
+
+    step = context.get("step")
+    if step and f"step: {step}" not in message:
+        message = f"{message} (step: {step})"
+
+    if event_type not in message:
+        return f"{event_type}: {message}"
+    return message
+
+
+def _latest_failure_reason(device_id: str, started_at: datetime) -> str | None:
+    """Prefer the most specific recent device error over a generic None result."""
+    rows = sync_execute(
+        """SELECT event_type, message, context
+           FROM system_events
+           WHERE device_id = %s
+             AND severity IN ('error', 'critical')
+             AND timestamp >= %s
+           ORDER BY timestamp DESC
+           LIMIT 10""",
+        (device_id, started_at),
+    )
+    if not rows:
+        return None
+
+    generic_reason: str | None = None
+    for row in rows:
+        reason = _format_failure_reason(row)
+        if generic_reason is None:
+            generic_reason = reason
+        if row.get("event_type") not in _GENERIC_FAILURE_EVENTS:
+            return reason
+
+    return generic_reason
 
 
 def run_seeder_cycle(
@@ -95,6 +144,7 @@ def run_seeder_cycle(
         (task_id,),
     )
 
+    task_started_at = datetime.now(timezone.utc)
     result = None
     try:
         if task_type == "create_email":
@@ -116,15 +166,28 @@ def run_seeder_cycle(
                             "result_id": result.get("id"),
                         })
         else:
-            fail_seeder_task(task_id, "Execution returned None")
+            failure_reason = _latest_failure_reason(device_id, task_started_at) or "Execution returned None"
+            fail_seeder_task(task_id, failure_reason)
             events.emit("scheduler", "error", "seeder_task_failed",
-                        f"Seeder {device_name}: {task_type} failed for {persona_name}",
+                        f"Seeder {device_name}: {task_type} failed for {persona_name}: {failure_reason}",
                         device_id=device_id,
-                        context={"task_id": task_id, "task_type": task_type})
+                        context={
+                            "task_id": task_id,
+                            "task_type": task_type,
+                            "error": failure_reason,
+                        })
 
     except Exception as e:
         logger.error("Seeder task failed: %s", e, exc_info=True)
         fail_seeder_task(task_id, str(e))
+        events.emit("scheduler", "error", "seeder_task_failed",
+                    f"Seeder {device_name}: {task_type} failed for {persona_name}: {e}",
+                    device_id=device_id,
+                    context={
+                        "task_id": task_id,
+                        "task_type": task_type,
+                        "error": str(e),
+                    })
     finally:
         if session_id:
             outcome = "success" if result else "failed"
@@ -189,6 +252,7 @@ def _execute_account_creation(
 
     Uses the existing account_creator module which drives app/Safari via WDA.
     """
+    from sovi.device.account_creator import consume_last_account_creation_failure
     from sovi.persona.account_creator import create_account_for_persona
 
     persona = _persona_from_task(task)
@@ -199,9 +263,38 @@ def _execute_account_creation(
     # returned to airplane-off / Wi-Fi-off state.
     if not wda.toggle_airplane_mode():
         logger.error("Seeder %s: could not rotate to a safe cellular-only state", device_name)
+        events.emit("scheduler", "error", "cellular_rotation_failed",
+                    f"Seeder {device_name}: could not rotate to a safe cellular-only state",
+                    device_id=device_id,
+                    context={"platform": platform, "step": "cellular_rotation"})
+        return None
+    if not wda.ensure_cellular_only():
+        logger.error("Seeder %s: post-rotation cellular-only verification failed", device_name)
+        events.emit("scheduler", "error", "cellular_rotation_failed",
+                    f"Seeder {device_name}: post-rotation cellular-only verification failed",
+                    device_id=device_id,
+                    context={"platform": platform, "step": "post_rotation_cellular_verification"})
         return None
 
     result = create_account_for_persona(wda, persona, platform, device_id=device_id)
+    if not result:
+        failure = consume_last_account_creation_failure()
+        if failure:
+            context = {
+                "persona_id": str(persona["id"]),
+                "platform": platform,
+                "step": failure.step,
+                **failure.context,
+            }
+            events.emit(
+                "scheduler",
+                "error",
+                "persona_account_creation_failed",
+                failure.reason,
+                device_id=device_id,
+                context=context,
+            )
+            raise RuntimeError(failure.reason)
 
     if result:
         account_id = result.get("id") or result.get("account_id")

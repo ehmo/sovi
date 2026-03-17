@@ -2,6 +2,20 @@
 
 from __future__ import annotations
 
+import sys
+from types import ModuleType
+from unittest.mock import patch
+
+# Stub numpy before scheduler imports seeder_email transitively.
+if "numpy" not in sys.modules:
+    _np = ModuleType("numpy")
+    _np.array = lambda *a, **k: None  # type: ignore[attr-defined]
+    _np.ndarray = type  # type: ignore[attr-defined]
+    _np.float64 = float  # type: ignore[attr-defined]
+    _np.int64 = int  # type: ignore[attr-defined]
+    _np.zeros = lambda *a, **k: []  # type: ignore[attr-defined]
+    sys.modules["numpy"] = _np
+
 from sovi.device.scheduler import (
     OVERHEAD_MIN,
     WARMABLE_PLATFORMS,
@@ -168,3 +182,24 @@ def test_scheduler_stop_event():
     scheduler._stop_event.set()
     assert scheduler._stop_event.is_set()
     assert not scheduler.is_running
+
+
+def test_scheduler_start_recovers_interrupted_seeder_tasks():
+    scheduler = DeviceScheduler()
+    device_row = {"id": "dev-1", "name": "iPhone-1"}
+
+    with (
+        patch("sovi.device.scheduler.enforce_clean_room"),
+        patch("sovi.device.scheduler.get_active_devices", return_value=[device_row]),
+        patch.object(scheduler._rotator, "start"),
+        patch("sovi.device.scheduler.recover_interrupted_seeder_tasks") as mock_recover,
+        patch("sovi.device.scheduler.dedupe_open_seeder_tasks") as mock_dedupe,
+        patch("sovi.device.scheduler.populate_seeder_tasks") as mock_populate,
+        patch("sovi.device.scheduler.threading.Thread") as mock_thread,
+    ):
+        scheduler.start()
+
+    mock_recover.assert_called_once()
+    mock_dedupe.assert_called_once()
+    mock_populate.assert_called_once()
+    mock_thread.assert_called_once()

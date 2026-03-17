@@ -18,11 +18,13 @@ from sovi.device.roles import (
     complete_seeder_task,
     fail_seeder_task,
     get_current_role,
+    dedupe_open_seeder_tasks,
     get_seeders,
     get_warmer_with_fewest_bindings,
     get_warmers,
     is_in_cooldown,
     populate_seeder_tasks,
+    recover_interrupted_seeder_tasks,
 )
 
 
@@ -189,6 +191,29 @@ class TestPopulateSeederTasks:
             created = populate_seeder_tasks()
         assert created == 0
 
+    def test_deduplicates_duplicate_persona_rows(self):
+        select_calls = 0
+        inserts: list[tuple] = []
+
+        def exec_side_effect(query, params=None):
+            nonlocal select_calls
+            if query.lstrip().startswith("SELECT"):
+                select_calls += 1
+                if select_calls == 1:
+                    return []
+                if select_calls == 2:
+                    return [{"persona_id": "p1"}, {"persona_id": "p1"}]
+                return []
+            if "INSERT INTO seeder_tasks" in query:
+                inserts.append(params)
+            return []
+
+        with patch(_SYNC_EXEC, side_effect=exec_side_effect):
+            created = populate_seeder_tasks()
+
+        assert created == 1
+        assert inserts == [("p1", "tiktok")]
+
 
 # --- claim_seeder_task ---
 
@@ -302,6 +327,8 @@ class TestSeederTaskLifecycle:
             patch(_SYNC_EXEC) as mock_exec,
         ):
             fail_seeder_task("t1", "some error")
+        query = mock_exec.call_args[0][0]
+        assert "claimed_by = NULL" in query
         params = mock_exec.call_args[0][1]
         assert "pending" in params  # reset for retry
 
@@ -314,6 +341,40 @@ class TestSeederTaskLifecycle:
             fail_seeder_task("t1", "repeated failure")
         params = mock_exec.call_args[0][1]
         assert "failed" in params
+
+    def test_recovers_interrupted_tasks(self):
+        interrupted_rows = [
+            {"id": "t1", "attempts": 1, "max_attempts": 3},
+            {"id": "t2", "attempts": 3, "max_attempts": 3},
+        ]
+
+        with (
+            patch(_SYNC_EXEC, side_effect=[interrupted_rows, None, None]) as mock_exec,
+            patch(_EVENTS_EMIT) as mock_emit,
+        ):
+            recovered = recover_interrupted_seeder_tasks()
+
+        assert recovered == 2
+        assert mock_exec.call_args_list[1][0][1][0] == "pending"
+        assert mock_exec.call_args_list[2][0][1][0] == "failed"
+        mock_emit.assert_called_once()
+
+    def test_dedupes_open_tasks(self):
+        open_rows = [
+            {"id": "t1", "persona_id": "p1", "platform": "instagram", "task_type": "create_account"},
+            {"id": "t2", "persona_id": "p1", "platform": "instagram", "task_type": "create_account"},
+            {"id": "t3", "persona_id": "p2", "platform": "reddit", "task_type": "create_account"},
+        ]
+
+        with (
+            patch(_SYNC_EXEC, side_effect=[open_rows, None]) as mock_exec,
+            patch(_EVENTS_EMIT) as mock_emit,
+        ):
+            cancelled = dedupe_open_seeder_tasks()
+
+        assert cancelled == 1
+        assert mock_exec.call_args_list[1][0][1] == ("Cancelled duplicate seeder task", "t2")
+        mock_emit.assert_called_once()
 
 
 # --- get_warmer_with_fewest_bindings ---

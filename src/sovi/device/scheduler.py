@@ -41,13 +41,16 @@ from sovi.device.identity_guard import (
     run_pre_session_checks,
     start_session,
 )
+from sovi.device.service_diagnostics import diagnose_wda_failure
 from sovi.device.roles import (
     SEEDER,
     WARMER,
+    dedupe_open_seeder_tasks,
     RoleRotator,
     get_current_role,
     is_in_cooldown,
     populate_seeder_tasks,
+    recover_interrupted_seeder_tasks,
 )
 from sovi.device.seeder import run_seeder_cycle
 from sovi.device.warming import WarmingConfig, WarmingPhase, run_warming
@@ -103,6 +106,18 @@ class DeviceScheduler:
 
         # Start role rotator (bootstraps roles on first run, rotates every 4-6h)
         self._rotator.start()
+
+        # Any claimed/in-progress seeder tasks from a prior dashboard process
+        # are orphaned once this scheduler starts. Requeue them before claiming.
+        try:
+            recover_interrupted_seeder_tasks()
+        except Exception:
+            logger.error("Failed to recover interrupted seeder tasks", exc_info=True)
+
+        try:
+            dedupe_open_seeder_tasks()
+        except Exception:
+            logger.error("Failed to dedupe open seeder tasks", exc_info=True)
 
         # Populate seeder task queue from pending personas
         try:
@@ -208,6 +223,44 @@ class DeviceScheduler:
         )
         return False
 
+    def _handle_wda_unreachable(self, device: WDADevice, dt: DeviceThread) -> None:
+        """Record the best available diagnostic when WDA cannot be reached."""
+        diagnostic = diagnose_wda_failure(device.name)
+        if diagnostic:
+            dt.current_task = diagnostic.reason
+            dt.error = diagnostic.reason
+            event_type = "device_setup_required" if diagnostic.manual_action_required else "device_disconnected"
+            severity = "error" if diagnostic.manual_action_required else "critical"
+            events.emit(
+                "device",
+                severity,
+                event_type,
+                diagnostic.summary,
+                device_id=dt.device_id,
+                context={
+                    "device_name": device.name,
+                    "wda_port": device.wda_port,
+                    "reason": diagnostic.reason,
+                    "hint": diagnostic.hint,
+                    "launchd_label": diagnostic.launchd_label,
+                    "log_path": diagnostic.log_path,
+                    "retry_after_seconds": diagnostic.retry_after_seconds,
+                },
+            )
+            logger.warning("%s | %s", diagnostic.summary, diagnostic.hint)
+            set_device_status(dt.device_id, "disconnected")
+            self._stop_event.wait(diagnostic.retry_after_seconds)
+            return
+
+        dt.current_task = "wda_unreachable"
+        dt.error = "WDA not responding"
+        events.emit("device", "critical", "device_disconnected",
+                   f"WDA not responding on {device.name}",
+                   device_id=dt.device_id,
+                   context={"device_name": device.name, "wda_port": device.wda_port})
+        set_device_status(dt.device_id, "disconnected")
+        self._stop_event.wait(60)
+
     def _device_loop(self, device_row: dict[str, Any], dt: DeviceThread) -> None:
         """Main loop for a single device thread.
 
@@ -222,10 +275,6 @@ class DeviceScheduler:
 
         while not self._stop_event.is_set() and dt.running:
             try:
-                # Heartbeat
-                update_heartbeat(device_id)
-                dt.error = None
-
                 # Wait for WDA to be responsive
                 dt.current_task = "waiting_for_wda"
                 wda_state = self._wait_for_wda(device)
@@ -235,15 +284,12 @@ class DeviceScheduler:
                     self._stop_event.wait(30)
                     continue
                 if not wda_state:
-                    dt.current_task = "wda_unreachable"
-                    dt.error = "WDA not responding"
-                    events.emit("device", "critical", "device_disconnected",
-                               f"WDA not responding on {device.name}",
-                               device_id=device_id,
-                               context={"device_name": device.name, "wda_port": device.wda_port})
-                    set_device_status(device_id, "disconnected")
-                    self._stop_event.wait(60)
+                    self._handle_wda_unreachable(device, dt)
                     continue
+
+                # Only heartbeat healthy devices.
+                update_heartbeat(device_id)
+                dt.error = None
 
                 # Check current role (may change between iterations via RoleRotator)
                 role = get_current_role(device_id)
@@ -293,6 +339,7 @@ class DeviceScheduler:
                 self._stop_event.wait(60)
                 return
 
+            dt.current_task = "seeder:executing"
             result = run_seeder_cycle(
                 session,
                 dt.device_id,
@@ -919,7 +966,6 @@ class DeviceScheduler:
                 pass
             time.sleep(2)
         return None if saw_busy else False
-
 
 # ---------------------------------------------------------------------------
 # Module-level singleton for CLI/dashboard access

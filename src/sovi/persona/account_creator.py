@@ -80,7 +80,17 @@ def create_account_for_persona(
     email_pw = password if provider == "mailtm" else None
 
     if platform in APP_PLATFORMS:
-        result = _create_app_account(wda, persona, platform, email, password, imap_config, device_id, email_password=email_pw)
+        result = _create_app_account(
+            wda,
+            persona,
+            platform,
+            email,
+            password,
+            imap_config,
+            device_id,
+            email_password=email_pw,
+            email_account=email_row,
+        )
     elif platform in WEB_PLATFORMS:
         result = _create_web_account(wda, persona, platform, email, password, imap_config, device_id, email_password=email_pw)
     else:
@@ -123,6 +133,7 @@ def _create_app_account(
     device_id: str | None,
     *,
     email_password: str | None = None,
+    email_account: dict[str, Any] | None = None,
 ) -> dict | None:
     """Create account via app (TikTok, Instagram) using persona data.
 
@@ -132,7 +143,10 @@ def _create_app_account(
     niche_id = persona["niche_id"]
     return create_account(
         wda, platform, niche_id, email, password,
-        imap_config=imap_config, email_password=email_password, device_id=device_id,
+        email_account=email_account,
+        imap_config=imap_config,
+        email_password=email_password,
+        device_id=device_id,
     )
 
 

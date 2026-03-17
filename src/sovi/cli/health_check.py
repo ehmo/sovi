@@ -17,6 +17,7 @@ from pathlib import Path
 import httpx
 
 from sovi.db import sync_conn, sync_execute
+from sovi.device.service_diagnostics import diagnose_wda_failure
 from sovi.device.wda_client import BUNDLE_IDS
 
 # Ensure homebrew on PATH
@@ -95,9 +96,19 @@ def check_wda() -> None:
             if ready:
                 print(f"  {ok(dev['name'])}: iOS {ios_ver}, WDA {wda_ver}, IP {ip}, port {port}")
             else:
-                print(f"  {warn(dev['name'])}: WDA not ready (port {port})")
+                diagnostic = diagnose_wda_failure(dev["name"])
+                if diagnostic:
+                    print(f"  {fail(dev['name'])}: {diagnostic.summary}")
+                    print(f"    Hint: {diagnostic.hint}")
+                else:
+                    print(f"  {warn(dev['name'])}: WDA not ready (port {port})")
         except Exception as e:
-            print(f"  {fail(dev['name'])}: {e}")
+            diagnostic = diagnose_wda_failure(dev["name"])
+            if diagnostic:
+                print(f"  {fail(dev['name'])}: {diagnostic.summary}")
+                print(f"    Hint: {diagnostic.hint}")
+            else:
+                print(f"  {fail(dev['name'])}: {e}")
 
 
 def check_apps() -> None:
@@ -197,6 +208,7 @@ def check_services() -> None:
     """Check launchd service status."""
     header("Launchd Services")
     services = [
+        "com.sovi.dashboard",
         "com.sovi.iproxy-iphone-a",
         "com.sovi.iproxy-iphone-b",
         "com.sovi.wda-iphone-a",

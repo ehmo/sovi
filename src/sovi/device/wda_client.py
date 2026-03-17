@@ -89,16 +89,29 @@ class WDASession:
     # Default iPhone 16 screen size as fallback
     _DEFAULT_SCREEN = {"width": 393, "height": 852}
 
+    @staticmethod
+    def _response_has_invalid_session(payload: Any) -> bool:
+        """Detect WDA's invalid-session payloads across endpoint shapes."""
+        text = str(payload).lower()
+        return "invalid session id" in text or "session does not exist" in text
+
     def screen_size(self) -> dict:
         if not self._screen_size:
             try:
                 resp = self.client.get(f"{self._s}/window/size")
-                value = resp.json().get("value", {})
+                data = resp.json()
+                if self._response_has_invalid_session(data):
+                    raise RuntimeError("invalid session id")
+                value = data.get("value", {})
+                if self._response_has_invalid_session(value):
+                    raise RuntimeError("invalid session id")
                 if isinstance(value, dict) and "width" in value and "height" in value:
                     self._screen_size = value
                 else:
                     logger.warning("Bad screen_size response: %s, using default", str(value)[:100])
                     self._screen_size = self._DEFAULT_SCREEN.copy()
+            except RuntimeError:
+                raise
             except Exception:
                 logger.warning("Error getting screen size, using default %s", self._DEFAULT_SCREEN)
                 self._screen_size = self._DEFAULT_SCREEN.copy()
@@ -136,7 +149,11 @@ class WDASession:
     def app_state(self, bundle_id: str) -> int:
         """Get app state: 1=not running, 2=bg, 3=suspended, 4=foreground."""
         resp = self.client.post(f"{self._s}/wda/apps/state", json={"bundleId": bundle_id})
-        return resp.json()["value"]
+        data = resp.json()
+        value = data.get("value")
+        if self._response_has_invalid_session(data) or self._response_has_invalid_session(value):
+            raise RuntimeError("invalid session id")
+        return value
 
     def open_url(self, url: str) -> None:
         """Open a URL on the device (e.g. itms-apps:// for App Store)."""
@@ -156,10 +173,14 @@ class WDASession:
                 json={"using": using, "value": value},
             )
             data = resp.json()
+            if self._response_has_invalid_session(data) or self._response_has_invalid_session(data.get("value")):
+                raise RuntimeError("invalid session id")
             if "value" in data and isinstance(data["value"], dict) and "ELEMENT" in data["value"]:
                 return data["value"]
         except (httpx.ReadTimeout, httpx.ConnectTimeout):
             logger.debug("Timeout finding element %s=%s", using, value)
+        except RuntimeError:
+            raise
         except Exception:
             logger.debug("Error finding element %s=%s", using, value, exc_info=True)
         return None
@@ -170,10 +191,15 @@ class WDASession:
                 f"{self._s}/elements",
                 json={"using": using, "value": value},
             )
-            return resp.json().get("value", [])
+            data = resp.json()
+            if self._response_has_invalid_session(data) or self._response_has_invalid_session(data.get("value")):
+                raise RuntimeError("invalid session id")
+            return data.get("value", [])
         except (httpx.ReadTimeout, httpx.ConnectTimeout):
             logger.debug("Timeout finding elements %s=%s", using, value)
             return []
+        except RuntimeError:
+            raise
 
     def element_click(self, element_id: str) -> None:
         try:
@@ -323,7 +349,11 @@ class WDASession:
 
     def source(self) -> str:
         resp = self.client.get(f"{self._s}/source")
-        return resp.json()["value"]
+        data = resp.json()
+        value = data.get("value")
+        if self._response_has_invalid_session(data) or self._response_has_invalid_session(value):
+            raise RuntimeError("invalid session id")
+        return value
 
     # --- Keyboard ---
 
@@ -381,19 +411,64 @@ class WDASession:
 
     # --- Network state enforcement (must be cellular-only) ---
 
-    def _open_control_center(self) -> None:
-        """Open Control Center from the top-right corner."""
+    def _stabilize_home_for_system_gesture(self) -> None:
+        """Return to the home screen before sending Control Center gestures."""
+        try:
+            self.press_button("home")
+            time.sleep(0.4)
+            self.press_button("home")
+            time.sleep(0.8)
+        except Exception:
+            pass
+
+    def _control_center_is_visible(self) -> bool:
+        """Best-effort check that Control Center is actually open."""
+        return bool(
+            self._find_control_center_toggle("airplane")
+            or self._find_control_center_toggle("wifi")
+        )
+
+    def _open_control_center(self) -> bool:
+        """Open Control Center from the top-right corner and verify it opened."""
         size = self.screen_size()
         w, h = size["width"], size["height"]
-        self.swipe(int(w * 0.9), 0, int(w * 0.5), int(h * 0.5), duration=0.3)
-        time.sleep(1.5)
+        gestures = (
+            (0.97, 0.03, 0.74, 0.38, 0.18),
+            (0.94, 0.05, 0.68, 0.48, 0.24),
+            (0.98, 0.02, 0.58, 0.58, 0.30),
+        )
+
+        for start_x, start_y, end_x, end_y, duration in gestures:
+            self._stabilize_home_for_system_gesture()
+            self.swipe(
+                int(w * start_x),
+                max(1, int(h * start_y)),
+                int(w * end_x),
+                int(h * end_y),
+                duration=duration,
+            )
+            time.sleep(1.2)
+            try:
+                if self._control_center_is_visible():
+                    return True
+            except RuntimeError:
+                if self.reconnect(attempts=1, delay_s=0.5):
+                    continue
+                raise
+
+        logger.warning("Could not open Control Center on %s", self.device.name)
+        return False
 
     def _close_control_center(self) -> None:
         """Dismiss Control Center."""
-        size = self.screen_size()
-        w, h = size["width"], size["height"]
-        self.swipe(int(w * 0.5), int(h * 0.9), int(w * 0.5), int(h * 0.5), duration=0.3)
-        time.sleep(0.5)
+        try:
+            self.press_button("home")
+            time.sleep(0.5)
+        except Exception:
+            size = self.screen_size()
+            w, h = size["width"], size["height"]
+            self.swipe(int(w * 0.5), int(h * 0.9), int(w * 0.5), int(h * 0.5), duration=0.3)
+            time.sleep(0.5)
 
     def _get_element_attribute(self, element_id: str, attribute: str) -> Any:
         """Fetch a single element attribute from WDA."""
@@ -405,6 +480,10 @@ class WDASession:
             return resp.json().get("value")
         except Exception:
             return None
+
+    def element_attribute(self, element_id: str, attribute: str) -> Any:
+        """Public attribute accessor for signup/login flows."""
+        return self._get_element_attribute(element_id, attribute)
 
     @staticmethod
     def _coerce_bool(value: Any) -> bool | None:
@@ -466,10 +545,6 @@ class WDASession:
 
     def _toggle_state_from_attributes(self, toggle: str, attrs: dict[str, Any]) -> bool | None:
         """Infer a Control Center toggle state from multiple WDA attributes."""
-        selected = self._coerce_bool(attrs.get("selected"))
-        if selected is not None:
-            return selected
-
         values = [attrs.get(attr) for attr in ("value", "label", "name")]
         normalized = [str(value).strip().lower() for value in values if value not in (None, "")]
 
@@ -496,6 +571,10 @@ class WDASession:
             ):
                 return False
 
+        selected = self._coerce_bool(attrs.get("selected"))
+        if selected is not None:
+            return selected
+
         return None
 
     def _read_control_center_toggle_state(self, toggle: str) -> tuple[dict | None, bool | None]:
@@ -514,12 +593,27 @@ class WDASession:
     def _set_control_center_toggle(self, toggle: str, *, desired_on: bool, attempts: int = 3) -> bool:
         """Set a Control Center toggle to a desired state and verify it."""
         for _ in range(attempts):
-            element, state = self._read_control_center_toggle_state(toggle)
+            try:
+                element, state = self._read_control_center_toggle_state(toggle)
+            except RuntimeError:
+                if not self.reconnect(attempts=1, delay_s=0.5):
+                    raise
+                if not self._open_control_center():
+                    logger.warning("Could not find %s toggle on %s", toggle, self.device.name)
+                    return False
+                element, state = self._read_control_center_toggle_state(toggle)
             if state is desired_on:
                 return True
             if not element:
-                logger.warning("Could not find %s toggle on %s", toggle, self.device.name)
-                return False
+                if not self._open_control_center():
+                    logger.warning("Could not find %s toggle on %s", toggle, self.device.name)
+                    return False
+                element, state = self._read_control_center_toggle_state(toggle)
+                if state is desired_on:
+                    return True
+                if not element:
+                    logger.warning("Could not find %s toggle on %s", toggle, self.device.name)
+                    return False
 
             self.element_click(element["ELEMENT"])
             time.sleep(1.0)
@@ -527,12 +621,29 @@ class WDASession:
         _, final_state = self._read_control_center_toggle_state(toggle)
         return final_state is desired_on
 
+    def reconnect(self, attempts: int = 3, delay_s: float = 1.5) -> bool:
+        """Recreate the WDA session after radio or app handoff churn."""
+        self._screen_size = None
+        for _ in range(attempts):
+            try:
+                self.disconnect()
+            except Exception:
+                pass
+            try:
+                self.connect()
+                self.screen_size()
+                return True
+            except Exception:
+                time.sleep(delay_s)
+        return False
+
     def ensure_airplane_mode_off(self) -> bool:
         """Ensure airplane mode is disabled before any network activity."""
         opened = False
         try:
-            self._open_control_center()
-            opened = True
+            opened = self._open_control_center()
+            if not opened:
+                return False
             ok = self._set_control_center_toggle("airplane", desired_on=False)
             if ok:
                 logger.info("Airplane mode confirmed off on %s", self.device.name)
@@ -565,8 +676,9 @@ class WDASession:
         """
         opened = False
         try:
-            self._open_control_center()
-            opened = True
+            opened = self._open_control_center()
+            if not opened:
+                return False
             ok = self._set_control_center_toggle("wifi", desired_on=False)
             if ok:
                 logger.info("WiFi confirmed off on %s", self.device.name)
@@ -612,8 +724,9 @@ class WDASession:
         opened = False
         rotated = False
         try:
-            self._open_control_center()
-            opened = True
+            opened = self._open_control_center()
+            if not opened:
+                return False
             if not self._set_control_center_toggle("airplane", desired_on=True):
                 logger.warning("Could not verify airplane mode enabled on %s", self.device.name)
                 return False
@@ -635,6 +748,9 @@ class WDASession:
                     pass
 
         time.sleep(wait_after)
+        if not self.reconnect():
+            logger.warning("Could not reconnect WDA session on %s after airplane toggle", self.device.name)
+            return False
         if not self.ensure_cellular_only():
             logger.warning(
                 "Airplane toggle on %s did not return to cellular-only state",
@@ -642,6 +758,7 @@ class WDASession:
             )
             return False
 
+        self.reset_to_home()
         if rotated:
             logger.info("Airplane mode toggled on %s — IP rotated", self.device.name)
         return rotated

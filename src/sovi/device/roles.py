@@ -331,12 +331,17 @@ def populate_seeder_tasks() -> int:
              AND st.id IS NULL
            ORDER BY p.created_at ASC""",
     )
+    seen_email_personas: set[str] = set()
     for row in email_tasks:
+        persona_id = str(row["persona_id"])
+        if persona_id in seen_email_personas:
+            continue
+        seen_email_personas.add(persona_id)
         sync_execute(
             """INSERT INTO seeder_tasks (persona_id, platform, task_type)
                VALUES (%s, 'tiktok', 'create_email')
                ON CONFLICT DO NOTHING""",
-            (str(row["persona_id"]),),
+            (persona_id,),
         )
         created += 1
 
@@ -360,11 +365,16 @@ def populate_seeder_tasks() -> int:
                ORDER BY p.created_at ASC""",
             (platform, platform),
         )
+        seen_platform_personas: set[str] = set()
         for row in account_tasks:
+            persona_id = str(row["persona_id"])
+            if persona_id in seen_platform_personas:
+                continue
+            seen_platform_personas.add(persona_id)
             sync_execute(
                 """INSERT INTO seeder_tasks (persona_id, platform, task_type)
                    VALUES (%s, %s::platform_type, 'create_account')""",
-                (str(row["persona_id"]), platform),
+                (persona_id, platform),
             )
             created += 1
 
@@ -445,10 +455,102 @@ def fail_seeder_task(task_id: str, error: str) -> None:
 
     sync_execute(
         """UPDATE seeder_tasks SET
-               status = %s, error_message = %s, updated_at = now()
+               status = %s,
+               error_message = %s,
+               claimed_by = NULL,
+               claimed_at = NULL,
+               updated_at = now()
            WHERE id = %s""",
         (status, error, task_id),
     )
+
+
+def recover_interrupted_seeder_tasks() -> int:
+    """Requeue or fail claimed tasks left behind by a prior scheduler process."""
+    rows = sync_execute(
+        """SELECT id, attempts, max_attempts
+           FROM seeder_tasks
+           WHERE status IN ('claimed', 'in_progress')""",
+    )
+    if not rows:
+        return 0
+
+    recovered = 0
+    interrupted_reason = "Interrupted by scheduler restart"
+    for row in rows:
+        task_id = str(row["id"])
+        status = "failed" if row["attempts"] >= row["max_attempts"] else "pending"
+        sync_execute(
+            """UPDATE seeder_tasks SET
+                   status = %s,
+                   error_message = CASE
+                       WHEN error_message IS NULL OR error_message = '' THEN %s
+                       ELSE error_message
+                   END,
+                   claimed_by = NULL,
+                   claimed_at = NULL,
+                   updated_at = now()
+               WHERE id = %s""",
+            (status, interrupted_reason, task_id),
+        )
+        recovered += 1
+
+    events.emit(
+        "scheduler",
+        "warning",
+        "seeder_tasks_recovered",
+        f"Recovered {recovered} interrupted seeder tasks",
+        context={"recovered": recovered},
+    )
+    logger.warning("Recovered %d interrupted seeder tasks", recovered)
+    return recovered
+
+
+def dedupe_open_seeder_tasks() -> int:
+    """Cancel duplicate open seeder tasks, keeping the oldest task per key."""
+    rows = sync_execute(
+        """SELECT id, persona_id, platform, task_type
+           FROM seeder_tasks
+           WHERE status IN ('pending', 'claimed', 'in_progress')
+           ORDER BY created_at ASC, id ASC""",
+    )
+    if not rows:
+        return 0
+
+    cancelled = 0
+    seen: set[tuple[str, str, str]] = set()
+    duplicate_reason = "Cancelled duplicate seeder task"
+    for row in rows:
+        task_key = (
+            str(row["persona_id"]),
+            str(row["platform"]),
+            str(row["task_type"]),
+        )
+        if task_key in seen:
+            sync_execute(
+                """UPDATE seeder_tasks SET
+                       status = 'cancelled',
+                       error_message = %s,
+                       claimed_by = NULL,
+                       claimed_at = NULL,
+                       updated_at = now()
+                   WHERE id = %s""",
+                (duplicate_reason, str(row["id"])),
+            )
+            cancelled += 1
+            continue
+        seen.add(task_key)
+
+    if cancelled:
+        events.emit(
+            "scheduler",
+            "warning",
+            "seeder_tasks_deduped",
+            f"Cancelled {cancelled} duplicate seeder tasks",
+            context={"cancelled": cancelled},
+        )
+        logger.warning("Cancelled %d duplicate seeder tasks", cancelled)
+    return cancelled
 
 
 # ---------------------------------------------------------------------------

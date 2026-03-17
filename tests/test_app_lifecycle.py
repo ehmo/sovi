@@ -138,6 +138,7 @@ class TestDeleteApp:
             result = delete_app(wda, "tiktok", device_id="dev-1")
         assert result is True
         wda.terminate_app.assert_called_once_with(BUNDLE_IDS["tiktok"])
+        assert wda.press_button.call_count >= 3
 
     def test_wda_uninstall_fallback_to_springboard(self):
         wda = self._make_wda()
@@ -162,6 +163,7 @@ class TestDeleteApp:
         with patch("time.sleep"), patch("sovi.device.app_lifecycle.events.emit"):
             result = delete_app(wda, "tiktok", device_id="dev-1")
         assert result is True
+        assert wda.press_button.call_count >= 4
 
     def test_wda_uninstall_fallback_requires_delete_confirmation(self):
         wda = self._make_wda()
@@ -184,6 +186,7 @@ class TestDeleteApp:
         with patch("time.sleep"), patch("sovi.device.app_lifecycle.events.emit"):
             result = delete_app(wda, "tiktok", device_id="dev-1")
         assert result is False
+        assert wda.press_button.call_count >= 4
 
     def test_exception_returns_false(self):
         wda = self._make_wda()
@@ -192,6 +195,7 @@ class TestDeleteApp:
         with patch("time.sleep"), patch("sovi.device.app_lifecycle.events.emit"):
             result = delete_app(wda, "tiktok", device_id="dev-1")
         assert result is False
+        assert wda.press_button.call_count >= 2
 
 
 # --- reset_idfa ---
@@ -266,6 +270,172 @@ class TestInstallFromAppStore:
             result = install_from_app_store(wda, "tiktok", device_id="dev-1", timeout=120)
         assert result is True
         wda.open_url.assert_called_once_with(APP_STORE_URLS["tiktok"])
+
+    def test_install_succeeds_when_offer_button_reports_open(self):
+        wda = self._make_wda()
+
+        def find_element_side_effect(using, value):
+            if using == "predicate string" and 'AppStore.offerButton' in value and "open" in value:
+                return {"ELEMENT": "offer-open"}
+            return None
+
+        wda.find_element.side_effect = find_element_side_effect
+        wda.app_state.return_value = 1
+
+        auto_mock = MagicMock()
+        with (
+            patch("time.sleep"),
+            patch("sovi.device.app_lifecycle.events.emit"),
+            patch("sovi.device.app_lifecycle.DeviceAutomation", return_value=auto_mock),
+        ):
+            result = install_from_app_store(wda, "instagram", device_id="dev-1", timeout=30)
+
+        assert result is True
+        wda.element_click.assert_not_called()
+        wda.press_button.assert_called_with("home")
+
+    def test_install_starts_when_offer_button_reports_get(self):
+        wda = self._make_wda()
+
+        def find_element_side_effect(using, value):
+            if using == "predicate string" and 'AppStore.offerButton' in value and "get" in value:
+                return {"ELEMENT": "offer-get"}
+            return None
+
+        wda.find_element.side_effect = find_element_side_effect
+        wda.app_state.side_effect = [0, 1]
+
+        auto_mock = MagicMock()
+        with (
+            patch("time.sleep"),
+            patch("time.time", side_effect=[0, 0, 1]),
+            patch("sovi.device.app_lifecycle.events.emit"),
+            patch("sovi.device.app_lifecycle.DeviceAutomation", return_value=auto_mock),
+        ):
+            result = install_from_app_store(wda, "instagram", device_id="dev-1", timeout=30)
+
+        assert result is True
+        wda.element_click.assert_called_once_with("offer-get")
+
+    def test_install_succeeds_when_app_state_is_stale_but_offer_button_is_open(self):
+        wda = self._make_wda()
+        calls = {"count": 0}
+
+        def find_element_side_effect(using, value):
+            if using == "accessibility id" and value == "GET" and calls["count"] == 0:
+                calls["count"] += 1
+                return {"ELEMENT": "get-btn"}
+            if using == "predicate string" and 'AppStore.offerButton' in value and "open" in value:
+                return {"ELEMENT": "offer-open"}
+            return None
+
+        wda.find_element.side_effect = find_element_side_effect
+        wda.app_state.side_effect = [1, 1]
+
+        auto_mock = MagicMock()
+        with (
+            patch("time.sleep"),
+            patch("time.time", side_effect=[0, 0, 1]),
+            patch("sovi.device.app_lifecycle.events.emit"),
+            patch("sovi.device.app_lifecycle.DeviceAutomation", return_value=auto_mock),
+        ):
+            result = install_from_app_store(wda, "instagram", device_id="dev-1", timeout=30)
+
+        assert result is True
+        wda.element_click.assert_called_once_with("get-btn")
+        wda.press_button.assert_called_with("home")
+
+    def test_install_retries_after_session_churn_on_product_page(self):
+        wda = self._make_wda()
+        rounds = {"value": 0}
+
+        def find_element_side_effect(using, value):
+            if rounds["value"] == 0:
+                return None
+            if using == "predicate string" and 'AppStore.offerButton' in value and "open" in value:
+                return {"ELEMENT": "offer-open"}
+            return None
+
+        def reconnect_side_effect():
+            rounds["value"] += 1
+
+        wda.find_element.side_effect = find_element_side_effect
+        wda.connect.side_effect = reconnect_side_effect
+        wda.app_state.return_value = 1
+
+        auto_mock = MagicMock()
+        with (
+            patch("time.sleep"),
+            patch("sovi.device.app_lifecycle.events.emit"),
+            patch("sovi.device.app_lifecycle.DeviceAutomation", return_value=auto_mock),
+        ):
+            result = install_from_app_store(wda, "instagram", device_id="dev-1", timeout=30)
+
+        assert result is True
+        assert wda.connect.called
+        assert wda.open_url.call_count == 2
+
+    def test_install_reconnects_when_polling_hits_invalid_session(self):
+        wda = self._make_wda()
+        calls = {"count": 0}
+
+        def find_element_side_effect(using, value):
+            if using == "predicate string" and 'AppStore.offerButton' in value and "get" in value and calls["count"] == 0:
+                calls["count"] += 1
+                return {"ELEMENT": "offer-get"}
+            if using == "predicate string" and 'AppStore.offerButton' in value and "open" in value and calls["count"] >= 1:
+                return {"ELEMENT": "offer-open"}
+            return None
+
+        wda.find_element.side_effect = find_element_side_effect
+        wda.app_state.side_effect = [0, RuntimeError("invalid session id"), 1]
+
+        auto_mock = MagicMock()
+        with (
+            patch("time.sleep"),
+            patch("time.time", side_effect=[0, 0, 1]),
+            patch("sovi.device.app_lifecycle.events.emit"),
+            patch("sovi.device.app_lifecycle.DeviceAutomation", return_value=auto_mock),
+        ):
+            result = install_from_app_store(wda, "instagram", device_id="dev-1", timeout=30)
+
+        assert result is True
+        assert wda.connect.called
+        assert wda.open_url.call_count >= 2
+
+    def test_install_falls_back_to_search_when_product_page_lookup_fails(self):
+        wda = self._make_wda()
+
+        def find_element_side_effect(using, value):
+            if using == "accessibility id" and value == "Search":
+                return {"ELEMENT": "search-tab"}
+            if using == "class chain" and value == "**/XCUIElementTypeSearchField":
+                return {"ELEMENT": "search-field"}
+            if using == "accessibility id" and value == "search":
+                return {"ELEMENT": "submit-search"}
+            if (
+                using == "predicate string"
+                and 'AppStore.offerButton' in value
+                and "get" in value
+                and wda.launch_app.called
+            ):
+                return {"ELEMENT": "offer-get"}
+            return None
+
+        wda.find_element.side_effect = find_element_side_effect
+        wda.app_state.side_effect = [0, 1]
+
+        auto_mock = MagicMock()
+        with (
+            patch("time.sleep"),
+            patch("time.time", side_effect=[0, 0, 1]),
+            patch("sovi.device.app_lifecycle.events.emit"),
+            patch("sovi.device.app_lifecycle.DeviceAutomation", return_value=auto_mock),
+        ):
+            result = install_from_app_store(wda, "instagram", device_id="dev-1", timeout=30)
+
+        assert result is True
+        assert wda.launch_app.called
 
     def test_install_timeout(self):
         wda = self._make_wda()

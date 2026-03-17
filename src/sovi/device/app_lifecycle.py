@@ -264,6 +264,12 @@ def delete_app(wda: WDASession, platform: str, *, device_id: str | None = None) 
         logger.error("Unknown platform: %s", platform)
         return False
 
+    def _return_home() -> None:
+        with suppress(Exception):
+            wda.press_button("home")
+            time.sleep(0.5)
+            wda.press_button("home")
+
     try:
         # First terminate the app if running
         wda.terminate_app(bundle_id)
@@ -280,6 +286,7 @@ def delete_app(wda: WDASession, platform: str, *, device_id: str | None = None) 
                 json={"bundleId": bundle_id},
             )
             if resp.status_code == 200:
+                _return_home()
                 logger.info("Deleted %s (%s)", platform, bundle_id)
                 events.emit("device", "info", "app_deleted",
                            f"Deleted {platform} app for IDFV reset",
@@ -303,10 +310,12 @@ def delete_app(wda: WDASession, platform: str, *, device_id: str | None = None) 
         app_el = wda.find_element("accessibility id", app_name)
         if not app_el:
             logger.warning("Could not find %s icon on springboard", app_name)
+            _return_home()
             return False
 
         el_id = app_el.get("ELEMENT", "")
         if not el_id:
+            _return_home()
             return False
 
         # Long press (3s) to trigger jiggle mode
@@ -325,6 +334,7 @@ def delete_app(wda: WDASession, platform: str, *, device_id: str | None = None) 
                 break
         if not remove_clicked:
             logger.warning("Could not find remove action for %s", app_name)
+            _return_home()
             return False
 
         # Confirm deletion
@@ -339,8 +349,10 @@ def delete_app(wda: WDASession, platform: str, *, device_id: str | None = None) 
                 break
         if not confirm_clicked:
             logger.warning("Could not confirm delete for %s", app_name)
+            _return_home()
             return False
 
+        _return_home()
         logger.info("Deleted %s via springboard", platform)
         events.emit("device", "info", "app_deleted",
                     f"Deleted {platform} app via springboard",
@@ -354,7 +366,144 @@ def delete_app(wda: WDASession, platform: str, *, device_id: str | None = None) 
                     f"Failed to delete {platform} app",
                     device_id=device_id,
                     context={"platform": platform})
+        _return_home()
         return False
+
+
+def _find_app_store_action_button(wda: WDASession) -> tuple[dict | None, str | None]:
+    """Find the App Store product-page action button and classify its meaning."""
+    direct_buttons = [
+        ("GET", "tap"),
+        ("Get", "tap"),
+        ("INSTALL", "tap"),
+        ("Install", "tap"),
+        ("UPDATE", "tap"),
+        ("Update", "tap"),
+        ("OPEN", "installed"),
+        ("Open", "installed"),
+    ]
+    for label, action in direct_buttons:
+        button = wda.find_element("accessibility id", label)
+        if button:
+            return button, action
+
+    # Modern App Store product pages expose a stateful offer button id
+    # instead of a plain accessibility id like "Open" or "Get".
+    offer_buttons = [
+        ("open", "installed"),
+        ("get", "tap"),
+        ("install", "tap"),
+        ("update", "tap"),
+        ("redownload", "tap"),
+    ]
+    for state, action in offer_buttons:
+        button = wda.find_element(
+            "predicate string",
+            f'name BEGINSWITH "AppStore.offerButton" AND name CONTAINS[c] "{state}"',
+        )
+        if button:
+            return button, action
+
+    for label, action in [
+        ("Open", "installed"),
+        ("Get", "tap"),
+        ("Install", "tap"),
+        ("Update", "tap"),
+    ]:
+        button = wda.find_element(
+            "predicate string",
+            f'type == "XCUIElementTypeButton" AND (label == "{label}" OR name == "{label}")',
+        )
+        if button:
+            return button, action
+
+    cloud_btn = wda.find_element(
+        "predicate string",
+        'name CONTAINS[c] "download" OR name CONTAINS[c] "cloud" OR name CONTAINS[c] "icloud"'
+    )
+    if cloud_btn:
+        return cloud_btn, "tap"
+
+    return None, None
+
+
+def _reconnect_wda_session(wda: WDASession) -> bool:
+    """Recreate the WDA session after app-to-app handoffs invalidate it."""
+    try:
+        wda.disconnect()
+    except Exception:
+        pass
+    try:
+        wda.connect()
+        return True
+    except Exception:
+        return False
+
+
+def _start_app_store_install_via_search(
+    wda: WDASession,
+    auto: DeviceAutomation,
+    app_name: str,
+) -> bool:
+    """Fallback App Store install flow using in-app search."""
+    wda.launch_app("com.apple.AppStore")
+    time.sleep(3)
+    auto.dismiss_popups(max_attempts=2)
+
+    search_tab = wda.find_element("accessibility id", "Search")
+    if not search_tab:
+        search_tab = wda.find_element(
+            "predicate string",
+            'label == "Search" AND type == "XCUIElementTypeButton"'
+        )
+    if search_tab:
+        wda.element_click(search_tab["ELEMENT"])
+        time.sleep(2)
+
+    search_field = wda.find_element("class chain", "**/XCUIElementTypeSearchField")
+    if not search_field:
+        time.sleep(2)
+        search_field = wda.find_element("class chain", "**/XCUIElementTypeSearchField")
+    if not search_field:
+        logger.error("Could not find App Store search field")
+        return False
+
+    el_id = search_field.get("ELEMENT", "")
+    wda.element_click(el_id)
+    time.sleep(0.5)
+    wda.element_value(el_id, app_name)
+    time.sleep(1)
+
+    search_btn = wda.find_element("accessibility id", "search")
+    if search_btn:
+        wda.element_click(search_btn["ELEMENT"])
+    time.sleep(3)
+
+    action_btn, action = _find_app_store_action_button(wda)
+    if action_btn and action == "installed":
+        logger.info("%s is already installed", app_name)
+        wda.press_button("home")
+        time.sleep(1)
+        return True
+    if action_btn and action == "tap":
+        wda.element_click(action_btn.get("ELEMENT", ""))
+        return True
+    return False
+
+
+def _install_completion_confirmed(
+    wda: WDASession,
+    bundle_id: str,
+    *,
+    pre_state: int,
+) -> bool:
+    """Confirm an App Store install via app state or product-page button state."""
+    state = wda.app_state(bundle_id)
+    if state >= 1 and (pre_state <= 0 or state > pre_state):
+        return True
+
+    _, action = _find_app_store_action_button(wda)
+    return action == "installed"
 
 
 def install_from_app_store(
@@ -387,7 +536,7 @@ def install_from_app_store(
         if store_url:
             logger.info("Opening App Store page for %s via URL scheme", app_name)
             wda.open_url(store_url)
-            time.sleep(5)
+            time.sleep(2)
             auto.dismiss_popups(max_attempts=2)
 
             # Dismiss App Store onboarding if it appears
@@ -406,82 +555,35 @@ def install_from_app_store(
                 else:
                     break
 
-            time.sleep(2)
-
-            # Look for GET / cloud download button on the app page
-            for label in ["GET", "Get", "INSTALL", "Install", "OPEN", "Open"]:
-                get_btn = wda.find_element("accessibility id", label)
-                if get_btn:
-                    if label.upper() == "OPEN":
-                        # Already installed
-                        logger.info("%s is already installed", app_name)
-                        wda.press_button("home")
-                        time.sleep(1)
-                        return True
-                    logger.info("Tapping '%s' for %s", label, app_name)
-                    wda.element_click(get_btn["ELEMENT"])
-                    install_started = True
-                    break
-            else:
-                # Try cloud download icon (redownload from purchases)
-                cloud_btn = wda.find_element(
-                    "predicate string",
-                    'name CONTAINS "download" OR name CONTAINS "cloud" OR name CONTAINS "icloud"'
-                )
-                if cloud_btn:
-                    logger.info("Tapping cloud download for %s", app_name)
-                    wda.element_click(cloud_btn.get("ELEMENT", ""))
-                    install_started = True
-
-        else:
-            # Fallback: search-based install
-            wda.launch_app("com.apple.AppStore")
-            time.sleep(3)
-            auto.dismiss_popups(max_attempts=2)
-
-            search_tab = wda.find_element("accessibility id", "Search")
-            if not search_tab:
-                search_tab = wda.find_element(
-                    "predicate string",
-                    'label == "Search" AND type == "XCUIElementTypeButton"'
-                )
-            if search_tab:
-                wda.element_click(search_tab["ELEMENT"])
-                time.sleep(2)
-
-            search_field = wda.find_element("class chain", "**/XCUIElementTypeSearchField")
-            if not search_field:
-                time.sleep(2)
-                search_field = wda.find_element("class chain", "**/XCUIElementTypeSearchField")
-            if not search_field:
-                logger.error("Could not find App Store search field")
-                return False
-
-            el_id = search_field.get("ELEMENT", "")
-            wda.element_click(el_id)
-            time.sleep(0.5)
-            wda.element_value(el_id, app_name)
             time.sleep(1)
 
-            search_btn = wda.find_element("accessibility id", "search")
-            if search_btn:
-                wda.element_click(search_btn["ELEMENT"])
-            time.sleep(3)
-
-            for label in ["GET", "Get", "INSTALL", "Install"]:
-                get_btn = wda.find_element("accessibility id", label)
-                if get_btn:
-                    wda.element_click(get_btn["ELEMENT"])
+            for attempt in range(3):
+                action_btn, action = _find_app_store_action_button(wda)
+                if action_btn and action == "installed":
+                    logger.info("%s is already installed", app_name)
+                    wda.press_button("home")
+                    time.sleep(1)
+                    return True
+                if action_btn and action == "tap":
+                    logger.info("Tapping App Store action button for %s", app_name)
+                    wda.element_click(action_btn.get("ELEMENT", ""))
                     install_started = True
                     break
-            else:
-                cloud_btn = wda.find_element(
-                    "predicate string",
-                    'name CONTAINS "download" OR name CONTAINS "cloud"'
-                )
-                if cloud_btn:
-                    wda.element_click(cloud_btn.get("ELEMENT", ""))
-                    install_started = True
+                if attempt == 2:
+                    break
+                logger.info("Retrying App Store product page lookup for %s", app_name)
+                if not _reconnect_wda_session(wda):
+                    break
+                wda.open_url(store_url)
+                time.sleep(3)
+                auto.dismiss_popups(max_attempts=1)
+
+            if not install_started:
+                logger.info("Falling back to App Store search for %s", app_name)
+                install_started = _start_app_store_install_via_search(wda, auto, app_name)
+
+        else:
+            install_started = _start_app_store_install_via_search(wda, auto, app_name)
 
         if not install_started:
             logger.error("Could not find install button for %s", app_name)
@@ -500,18 +602,29 @@ def install_from_app_store(
         )
         deadline = time.time() + timeout
         while time.time() < deadline:
-            # Check if app is now installed
-            state = wda.app_state(bundle_id)
-            if state >= 1 and (pre_state <= 0 or state > pre_state):
-                logger.info("Successfully installed %s", app_name)
-                events.emit("device", "info", "app_installed",
-                           f"Installed {platform} from App Store",
-                           device_id=device_id,
-                           context={"platform": platform, "bundle_id": bundle_id})
-                # Go home
-                wda.press_button("home")
-                time.sleep(1)
-                return True
+            try:
+                auto.dismiss_popups(max_attempts=1)
+                if _install_completion_confirmed(wda, bundle_id, pre_state=pre_state):
+                    logger.info("Successfully installed %s", app_name)
+                    events.emit("device", "info", "app_installed",
+                               f"Installed {platform} from App Store",
+                               device_id=device_id,
+                               context={"platform": platform, "bundle_id": bundle_id})
+                    # Go home
+                    wda.press_button("home")
+                    time.sleep(1)
+                    return True
+            except RuntimeError:
+                logger.warning(
+                    "WDA session churn while installing %s; reconnecting to verify state",
+                    app_name,
+                )
+                if not _reconnect_wda_session(wda):
+                    raise
+                if store_url:
+                    wda.open_url(store_url)
+                    time.sleep(3)
+                    auto.dismiss_popups(max_attempts=1)
             time.sleep(5)
 
         logger.error("Timed out waiting for %s install", app_name)
