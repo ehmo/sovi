@@ -17,6 +17,7 @@ Automated social media account farm and content distribution system. Manages fle
 | [Event System](event-system.md) | Structured event logging, categories, severity levels, querying, resolution |
 | [Content Pipeline](content-pipeline.md) | Research, scriptwriting, asset generation, video assembly, distribution |
 | [CLI Reference](cli-reference.md) | All commands, options, configuration variables |
+| [Tooling Plan](tooling-plan.md) | Runtime, debugging, inspection, and future Apple-tooling stack for physical-device automation |
 | [Cellular IP Strategy](cellular-ip-strategy.md) | Carrier plans, airplane mode IP rotation, replacing proxies with real cellular |
 | [Email Strategy](email-strategy.md) | Multi-domain catch-all, provider comparison, email generation for account creation |
 | [Email Creation Pipeline](email-creation-pipeline.md) | Outlook/Mail.com signup automation, WDA flows, batch scheduling, inventory management |

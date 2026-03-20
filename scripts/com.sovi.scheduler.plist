@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.sovi.scheduler</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/noh/Work/ai/sovi_runtime_clean/.venv/bin/python</string>
+        <string>-m</string>
+        <string>sovi</string>
+        <string>scheduler</string>
+        <string>start</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+        <key>Crashed</key>
+        <true/>
+    </dict>
+    <key>WorkingDirectory</key>
+    <string>/Users/noh/Work/ai/sovi_runtime_clean</string>
+    <key>StandardOutPath</key>
+    <string>/tmp/com.sovi.scheduler.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/com.sovi.scheduler.err</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/Users/noh/Work/ai/sovi_runtime_clean/.venv/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+</dict>
+</plist>

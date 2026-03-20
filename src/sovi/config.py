@@ -95,21 +95,27 @@ class Settings(BaseSettings):
 
     # Identity guard
     identity_guard_enabled: bool = True
-    min_cooldown_seconds: int = 300   # 5 min
-    max_cooldown_seconds: int = 900   # 15 min
+    min_cooldown_seconds: int = 300  # 5 min
+    max_cooldown_seconds: int = 900  # 15 min
     max_sessions_per_device_day: int = 24
 
-    # Device network monitor
+    # Device network monitor - optimized for stability
     device_network_monitor_enabled: bool = True
-    device_network_monitor_interval_seconds: int = 30
-    device_network_monitor_unhealthy_wait_seconds: int = 60
-    device_network_reset_cooldown_seconds: int = 900
-    device_network_reset_disabled_seconds: int = 60
-    device_network_reset_settle_seconds: int = 6
-    device_network_probe_attempts: int = 4
-    device_network_probe_wait_seconds: float = 5.0
+    device_network_monitor_interval_seconds: int = 60  # Increased from 30 to reduce frequency
+    device_network_monitor_unhealthy_wait_seconds: int = 45  # Reduced from 60 to recover faster
+    device_network_reset_cooldown_seconds: int = 600  # Reduced from 900
+    device_network_reset_disabled_seconds: int = 45  # Reduced from 60
+    device_network_reset_settle_seconds: int = 8  # Increased from 6 for better stability
+    device_network_probe_attempts: int = 3  # Reduced from 4
+    device_network_probe_wait_seconds: float = 4.0  # Reduced from 5.0
+
+    # Control Center settings for improved reliability
+    control_center_max_attempts: int = 5
+    control_center_base_delay_seconds: float = 1.5
+    control_center_backoff_multiplier: float = 1.5
+
     scheduler_runtime_guard_enabled: bool = True
-    scheduler_runtime_guard_interval_seconds: int = 30
+    scheduler_runtime_guard_interval_seconds: int = 60  # Increased from 30
 
     # Paths
     output_dir: Path = Field(default_factory=lambda: PROJECT_ROOT / "output")

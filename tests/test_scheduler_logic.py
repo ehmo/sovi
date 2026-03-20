@@ -72,8 +72,13 @@ def test_warming_phase_from_account_state():
         AccountState.ACTIVE: WarmingPhase.LIGHT,
     }
     # Every warmable state must have a mapping
-    for state in (AccountState.CREATED, AccountState.WARMING_P1, AccountState.WARMING_P2,
-                  AccountState.WARMING_P3, AccountState.ACTIVE):
+    for state in (
+        AccountState.CREATED,
+        AccountState.WARMING_P1,
+        AccountState.WARMING_P2,
+        AccountState.WARMING_P3,
+        AccountState.ACTIVE,
+    ):
         assert state in phase_map
 
 
@@ -107,6 +112,7 @@ def test_phase_map_strenum_interop():
 
 def test_warming_day_state_transitions():
     """Phase transitions based on warming days (from _execute_warming)."""
+
     def next_state(day_count: int) -> AccountState:
         if day_count <= 3:
             return AccountState.WARMING_P1
@@ -128,6 +134,7 @@ def test_warming_day_state_transitions():
 
 def test_warming_day_boundary_values():
     """Boundary: day 0 (fresh account), day 1 (first warming)."""
+
     def next_state(day_count: int) -> AccountState:
         if day_count <= 3:
             return AccountState.WARMING_P1
@@ -139,11 +146,12 @@ def test_warming_day_boundary_values():
             return AccountState.ACTIVE
 
     assert next_state(0) == AccountState.WARMING_P1  # day 0 = fresh
-    assert next_state(100) == AccountState.ACTIVE     # long-warmed
+    assert next_state(100) == AccountState.ACTIVE  # long-warmed
 
 
 def test_warming_day_transitions_use_enum_values():
     """Verify returned states are proper AccountState enum members (not raw strings)."""
+
     def next_state(day_count: int) -> AccountState:
         if day_count <= 3:
             return AccountState.WARMING_P1
@@ -192,20 +200,29 @@ def test_scheduler_start_recovers_interrupted_seeder_tasks():
         patch("sovi.device.scheduler.enforce_clean_room"),
         patch.object(scheduler, "guard_runtime_environment", return_value=True),
         patch.object(scheduler._instance_lock, "acquire", return_value=True),
-        patch("sovi.device.scheduler.build_scheduler_owner", return_value=MagicMock(to_dict=lambda: {"pid": 1})),
+        patch(
+            "sovi.device.scheduler.build_scheduler_owner",
+            return_value=MagicMock(to_dict=lambda: {"pid": 1}),
+        ),
         patch("sovi.device.scheduler.sync_execute", return_value=[device_row]),
         patch.object(scheduler._rotator, "start"),
         patch("sovi.device.scheduler.recover_interrupted_seeder_tasks") as mock_recover,
         patch("sovi.device.scheduler.dedupe_open_seeder_tasks") as mock_dedupe,
         patch("sovi.device.scheduler.populate_seeder_tasks") as mock_populate,
         patch("sovi.device.scheduler.threading.Thread") as mock_thread,
+        patch("sovi.device.scheduler.get_bulletproof_guard") as mock_guard,
     ):
+        # Mock the bulletproof guard to prevent monitor thread creation
+        mock_guard_instance = MagicMock()
+        mock_guard.return_value = mock_guard_instance
+
         scheduler.start()
 
     mock_recover.assert_called_once()
     mock_dedupe.assert_called_once()
     mock_populate.assert_called_once()
     mock_thread.assert_called_once()
+    mock_guard_instance.register_device.assert_called_once()
 
 
 def test_scheduler_start_falls_back_to_disconnected_devices_after_restart():
@@ -228,18 +245,27 @@ def test_scheduler_start_falls_back_to_disconnected_devices_after_restart():
         patch("sovi.device.scheduler.enforce_clean_room"),
         patch.object(scheduler, "guard_runtime_environment", return_value=True),
         patch.object(scheduler._instance_lock, "acquire", return_value=True),
-        patch("sovi.device.scheduler.build_scheduler_owner", return_value=MagicMock(to_dict=lambda: {"pid": 1})),
+        patch(
+            "sovi.device.scheduler.build_scheduler_owner",
+            return_value=MagicMock(to_dict=lambda: {"pid": 1}),
+        ),
         patch("sovi.device.scheduler.sync_execute", return_value=[device_row]) as mock_sync_execute,
         patch.object(scheduler._rotator, "start"),
         patch("sovi.device.scheduler.recover_interrupted_seeder_tasks"),
         patch("sovi.device.scheduler.dedupe_open_seeder_tasks"),
         patch("sovi.device.scheduler.populate_seeder_tasks"),
         patch("sovi.device.scheduler.threading.Thread") as mock_thread,
+        patch("sovi.device.scheduler.get_bulletproof_guard") as mock_guard,
     ):
+        # Mock the bulletproof guard
+        mock_guard_instance = MagicMock()
+        mock_guard.return_value = mock_guard_instance
+
         scheduler.start()
 
     mock_sync_execute.assert_called_once()
     mock_thread.assert_called_once()
+    mock_guard_instance.register_device.assert_called_once()
 
 
 def test_scheduler_start_rejects_runtime_conflicts():

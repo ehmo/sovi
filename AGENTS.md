@@ -124,3 +124,13 @@ For more details, see README.md and docs/QUICKSTART.md.
 - NEVER stop before pushing - that leaves work stranded locally
 - NEVER say "ready to push when you are" - YOU must push
 - If push fails, resolve and retry until it succeeds
+
+## Rob Pike's Programming Rules
+
+Adopt these as the default coding rules for this repo:
+
+1. You can't predict where a program will spend its time. Don't add speed hacks until a real bottleneck is proven.
+2. Measure before tuning. Only optimize after data shows one part of the system dominates the cost.
+3. Fancy algorithms are often slower when `n` is small, and `n` is usually small. Start simple unless measurements say otherwise.
+4. Fancy algorithms are usually buggier and harder to maintain. Prefer simple algorithms and simple data structures.
+5. Data dominates. Choose clear, well-shaped data structures first; the right algorithms usually follow from them.

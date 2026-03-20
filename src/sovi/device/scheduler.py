@@ -30,7 +30,13 @@ from sovi import events
 from sovi.config import settings
 from sovi.db import sync_conn, sync_execute, sync_execute_one
 from sovi.device._clean_room import enforce as enforce_clean_room
+from sovi.device.airplane_guard import get_bulletproof_guard
 from sovi.device.app_lifecycle import delete_app, install_from_app_store, login_account, reset_idfa
+from sovi.device.control_center_txn import (
+    ControlCenterTransaction,
+    StateChangeError,
+    StateVerificationError,
+)
 from sovi.device.device_registry import (
     set_device_status,
     to_wda_device,
@@ -77,6 +83,7 @@ WARMABLE_PLATFORMS = ("tiktok", "instagram")
 @dataclass
 class DeviceThread:
     """State for a device's scheduler thread."""
+
     device_id: str
     device_name: str
     thread: threading.Thread | None = None
@@ -123,7 +130,9 @@ class DeviceScheduler:
             )
 
         survivors = terminate_conflicting_scheduler_processes(conflicts)
-        terminated_pids = {conflict.pid for conflict in conflicts} - {conflict.pid for conflict in survivors}
+        terminated_pids = {conflict.pid for conflict in conflicts} - {
+            conflict.pid for conflict in survivors
+        }
         for conflict in conflicts:
             if conflict.pid in terminated_pids:
                 events.emit(
@@ -151,7 +160,10 @@ class DeviceScheduler:
 
     @staticmethod
     def _get_schedulable_devices() -> list[dict[str, Any]]:
-        """Return devices the scheduler should keep trying to manage across restarts."""
+        """Return devices the scheduler should keep trying to manage across restarts.
+
+        Excludes quarantined devices - they require manual intervention.
+        """
         return sync_execute(
             """SELECT id, name, model, udid, ios_version,
                       wda_port, status, "current_role",
@@ -241,6 +253,27 @@ class DeviceScheduler:
                     device_id = str(device_row["id"])
                     name = device_row["name"] or device_id[:8]
 
+                    # Check if device is quarantined - skip it
+                    if device_row.get("status") == "quarantined":
+                        logger.warning("Skipping quarantined device %s", name)
+                        events.emit(
+                            "scheduler",
+                            "warning",
+                            "device_quarantined_skipped",
+                            f"Skipping quarantined device {name}",
+                            device_id=device_id,
+                            context={"quarantine_reason": device_row.get("quarantine_reason")},
+                        )
+                        continue
+
+                    # Register device with bulletproof airplane mode guard
+                    guard = get_bulletproof_guard()
+                    guard.register_device(
+                        device_id=device_id,
+                        device_name=name,
+                        session_factory=lambda row=device_row: WDASession(to_wda_device(row)),
+                    )
+
                     dt = DeviceThread(device_id=device_id, device_name=name, running=True)
                     t = threading.Thread(
                         target=self._device_loop,
@@ -270,6 +303,16 @@ class DeviceScheduler:
             logger.info("Stopping scheduler...")
             self._stop_event.set()
             self._rotator.stop()
+
+            # Unregister all devices from bulletproof guard
+            guard = get_bulletproof_guard()
+            for dt in self._threads.values():
+                try:
+                    guard.unregister_device(dt.device_id)
+                except Exception as e:
+                    logger.warning(
+                        "Error unregistering device %s from guard: %s", dt.device_name, e
+                    )
 
             events.emit(
                 "scheduler",
@@ -310,17 +353,20 @@ class DeviceScheduler:
                     "state": dt.network_guard_state,
                     "last_checked_at": (
                         dt.network_guard_last_checked_at.isoformat()
-                        if dt.network_guard_last_checked_at else None
+                        if dt.network_guard_last_checked_at
+                        else None
                     ),
                     "last_recovered_at": (
                         dt.network_guard_last_recovered_at.isoformat()
-                        if dt.network_guard_last_recovered_at else None
+                        if dt.network_guard_last_recovered_at
+                        else None
                     ),
                     "last_error": dt.network_guard_last_error,
                     "consecutive_failures": dt.network_guard_consecutive_failures,
                     "last_cellular_reset_at": (
                         dt.network_guard_last_cellular_reset_at.isoformat()
-                        if dt.network_guard_last_cellular_reset_at else None
+                        if dt.network_guard_last_cellular_reset_at
+                        else None
                     ),
                 },
             }
@@ -401,7 +447,8 @@ class DeviceScheduler:
                     "state": state,
                     "last_cellular_reset_at": (
                         dt.network_guard_last_cellular_reset_at.isoformat()
-                        if dt.network_guard_last_cellular_reset_at else None
+                        if dt.network_guard_last_cellular_reset_at
+                        else None
                     ),
                 },
             )
@@ -537,21 +584,56 @@ class DeviceScheduler:
         platform: str | None = None,
         account_id: str | None = None,
     ) -> bool:
-        """Ensure the device is using carrier-ready cellular-only networking before continuing."""
-        dt.current_task = f"enforcing_cellular_only:{device_name}"
-        if session.ensure_cellular_ready(
-            probe_attempts=settings.device_network_probe_attempts,
-            probe_wait_s=settings.device_network_probe_wait_seconds,
-            cleanup=True,
-        ):
-            self._record_network_guard_healthy(dt, device=session.device)
-            return True
+        """Ensure the device is using carrier-ready cellular-only networking before continuing.
 
-        self._record_network_guard_failure(
-            dt,
-            device=session.device,
-            error="Carrier-ready cellular verification failed at task gate",
-        )
+        Uses bulletproof ControlCenterTransaction for atomic state changes with verification.
+        """
+        dt.current_task = f"enforcing_cellular_only:{device_name}"
+
+        try:
+            # Use bulletproof transaction for atomic state enforcement
+            with ControlCenterTransaction(
+                session=session,
+                device_id=dt.device_id,
+                device_name=device_name,
+            ) as txn:
+                # This enforces: airplane OFF, cellular ON, Wi-Fi OFF
+                txn.ensure_cellular_only()
+
+            # Verify carrier connectivity
+            if session.probe_cellular_connectivity(
+                attempts=settings.device_network_probe_attempts,
+                wait_s=settings.device_network_probe_wait_seconds,
+                cleanup=True,
+            ):
+                self._record_network_guard_healthy(dt, device=session.device)
+                return True
+
+            # Probe failed - network may not be working
+            self._record_network_guard_failure(
+                dt,
+                device=session.device,
+                error="Carrier connectivity probe failed after enforcing cellular-only state",
+            )
+
+        except (StateChangeError, StateVerificationError) as e:
+            # Bulletproof transaction failed - this is serious
+            logger.error("Cellular-only enforcement failed on %s: %s", device_name, e)
+            self._record_network_guard_failure(
+                dt,
+                device=session.device,
+                error=f"Control Center transaction failed: {e}",
+            )
+
+        except Exception as e:
+            logger.error(
+                "Unexpected error enforcing cellular-only on %s: %s", device_name, e, exc_info=True
+            )
+            self._record_network_guard_failure(
+                dt,
+                device=session.device,
+                error=f"Unexpected enforcement error: {e}",
+            )
 
         context = {"device_name": device_name}
         if platform:
@@ -585,7 +667,11 @@ class DeviceScheduler:
                 error=diagnostic.summary,
             )
             dt.error = diagnostic.reason
-            event_type = "device_setup_required" if diagnostic.manual_action_required else "device_disconnected"
+            event_type = (
+                "device_setup_required"
+                if diagnostic.manual_action_required
+                else "device_disconnected"
+            )
             severity = "error" if diagnostic.manual_action_required else "critical"
             events.emit(
                 "device",
@@ -616,10 +702,14 @@ class DeviceScheduler:
             error="WDA not responding",
         )
         dt.error = "WDA not responding"
-        events.emit("device", "critical", "device_disconnected",
-                   f"WDA not responding on {device.name}",
-                   device_id=dt.device_id,
-                   context={"device_name": device.name, "wda_port": device.wda_port})
+        events.emit(
+            "device",
+            "critical",
+            "device_disconnected",
+            f"WDA not responding on {device.name}",
+            device_id=dt.device_id,
+            context={"device_name": device.name, "wda_port": device.wda_port},
+        )
         set_device_status(dt.device_id, "disconnected")
         self._stop_event.wait(60)
 
@@ -650,6 +740,11 @@ class DeviceScheduler:
                     self._handle_wda_unreachable(device, dt)
                     continue
 
+                # WDA is now reachable - clear any previous error
+                if dt.error in ("wda_certificate_untrusted", "WDA not responding"):
+                    dt.error = None
+                    logger.info("WDA recovered on %s, cleared error state", device.name)
+
                 if not self._run_network_guard_check(device, dt, allow_cellular_reset=True):
                     dt.current_task = "paused:network_guard"
                     self._stop_event.wait(settings.device_network_monitor_unhealthy_wait_seconds)
@@ -679,10 +774,14 @@ class DeviceScheduler:
             except Exception:
                 dt.error = "Unhandled exception in device loop"
                 logger.error("Error in device loop for %s", device.name, exc_info=True)
-                events.emit("scheduler", "error", "device_loop_error",
-                           f"Unhandled error in {device.name} loop",
-                           device_id=device_id,
-                           context={"device_name": device.name})
+                events.emit(
+                    "scheduler",
+                    "error",
+                    "device_loop_error",
+                    f"Unhandled error in {device.name} loop",
+                    device_id=device_id,
+                    context={"device_name": device.name},
+                )
                 self._stop_event.wait(60)
 
         dt.running = False
@@ -767,7 +866,9 @@ class DeviceScheduler:
         # Session log (no proxy — all traffic is cellular)
         session_type = "warming" if task["type"] == "warm" else "creation"
         session_id = start_session(
-            device_id, account_id, session_type,
+            device_id,
+            account_id,
+            session_type,
             identity_checks=report.to_dict(),
         )
 
@@ -784,7 +885,9 @@ class DeviceScheduler:
                 return
             outcome = "success" if skipped else "failed"
         elif task["type"] == "create_persona_account":
-            outcome = "success" if self._execute_persona_account_creation(device, dt, task) else "failed"
+            outcome = (
+                "success" if self._execute_persona_account_creation(device, dt, task) else "failed"
+            )
         elif task["type"] == "create_email":
             outcome = "success" if self._execute_email_creation(device, dt, task) else "failed"
 
@@ -845,11 +948,18 @@ class DeviceScheduler:
                            FOR UPDATE OF a SKIP LOCKED""",
                         (
                             device_id,
-                            [AccountState.CREATED, AccountState.WARMING_P1, AccountState.WARMING_P2,
-                             AccountState.WARMING_P3, AccountState.ACTIVE],
+                            [
+                                AccountState.CREATED,
+                                AccountState.WARMING_P1,
+                                AccountState.WARMING_P2,
+                                AccountState.WARMING_P3,
+                                AccountState.ACTIVE,
+                            ],
                             list(WARMABLE_PLATFORMS),
-                            AccountState.CREATED, AccountState.WARMING_P1,
-                            AccountState.WARMING_P2, AccountState.WARMING_P3,
+                            AccountState.CREATED,
+                            AccountState.WARMING_P1,
+                            AccountState.WARMING_P2,
+                            AccountState.WARMING_P3,
                             AccountState.ACTIVE,
                         ),
                     )
@@ -971,13 +1081,20 @@ class DeviceScheduler:
         }
         phase = phase_map.get(state, WarmingPhase.PASSIVE)
 
-        events.emit("scheduler", "info", "warming_started",
-                    f"Warming {platform}/{username} (phase={phase.name})",
-                    device_id=device_id, account_id=account_id,
-                    context={
-                        "platform": platform, "account_id": account_id,
-                        "phase": phase.name, "duration_min": WARMING_DURATION_MIN,
-                    })
+        events.emit(
+            "scheduler",
+            "info",
+            "warming_started",
+            f"Warming {platform}/{username} (phase={phase.name})",
+            device_id=device_id,
+            account_id=account_id,
+            context={
+                "platform": platform,
+                "account_id": account_id,
+                "phase": phase.name,
+                "duration_min": WARMING_DURATION_MIN,
+            },
+        )
 
         session = WDASession(device)
         try:
@@ -1000,41 +1117,59 @@ class DeviceScheduler:
             # Step 1: Delete app for IDFV isolation
             dt.current_task = f"deleting:{platform}"
             if not delete_app(session, platform, device_id=device_id):
-                events.emit("scheduler", "error", "app_delete_failed",
-                           f"Failed to delete {platform} before warming",
-                           device_id=device_id, account_id=account_id,
-                           context={"platform": platform, "step": "delete"})
+                events.emit(
+                    "scheduler",
+                    "error",
+                    "app_delete_failed",
+                    f"Failed to delete {platform} before warming",
+                    device_id=device_id,
+                    account_id=account_id,
+                    context={"platform": platform, "step": "delete"},
+                )
                 return False
             time.sleep(2)
 
             # Step 1.5: Reset IDFA between sessions
             dt.current_task = f"resetting_idfa:{device.name}"
             if not reset_idfa(session, device_id=device_id):
-                logger.warning("IDFA reset failed for %s on %s; continuing with fresh install only",
-                               platform, device.name)
+                logger.warning(
+                    "IDFA reset failed for %s on %s; continuing with fresh install only",
+                    platform,
+                    device.name,
+                )
             else:
                 time.sleep(2)
 
             # Step 2: Install fresh
             dt.current_task = f"installing:{platform}"
             if not install_from_app_store(session, platform, device_id=device_id):
-                events.emit("scheduler", "error", "install_failed",
-                           f"Failed to install {platform} for warming",
-                           device_id=device_id, account_id=account_id,
-                           context={"platform": platform, "retry_count": 0})
+                events.emit(
+                    "scheduler",
+                    "error",
+                    "install_failed",
+                    f"Failed to install {platform} for warming",
+                    device_id=device_id,
+                    account_id=account_id,
+                    context={"platform": platform, "retry_count": 0},
+                )
                 return False
 
             # Step 3: Login
             dt.current_task = f"logging_in:{platform}/{username}"
             if not login_account(session, account, device_id=device_id):
-                events.emit("scheduler", "error", "login_failed",
-                           f"Login failed for {platform}/{username}",
-                           device_id=device_id, account_id=account_id,
-                           context={
-                               "platform": platform,
-                               "username": username,
-                               "step": "login",
-                           })
+                events.emit(
+                    "scheduler",
+                    "error",
+                    "login_failed",
+                    f"Login failed for {platform}/{username}",
+                    device_id=device_id,
+                    account_id=account_id,
+                    context={
+                        "platform": platform,
+                        "username": username,
+                        "step": "login",
+                    },
+                )
                 return False
 
             # Step 4: Warm
@@ -1051,12 +1186,19 @@ class DeviceScheduler:
             if isinstance(result, dict) and "error" in result:
                 logger.warning(
                     "run_warming returned error for %s/%s: %s",
-                    platform, username, result["error"],
+                    platform,
+                    username,
+                    result["error"],
                 )
-                events.emit("scheduler", "error", "warming_error",
-                            f"Warming error for {platform}/{username}: {result['error']}",
-                            device_id=device_id, account_id=account_id,
-                            context={"platform": platform, "error": result["error"]})
+                events.emit(
+                    "scheduler",
+                    "error",
+                    "warming_error",
+                    f"Warming error for {platform}/{username}: {result['error']}",
+                    device_id=device_id,
+                    account_id=account_id,
+                    context={"platform": platform, "error": result["error"]},
+                )
                 return False
 
             # Step 5: Update account state
@@ -1082,18 +1224,23 @@ class DeviceScheduler:
                 (new_day_count, new_state, account_id),
             )
 
-            events.emit("scheduler", "info", "warming_complete",
-                        f"Warmed {platform}/{username}: {result.get('videos_watched', 0)} videos",
-                        device_id=device_id, account_id=account_id,
-                        context={
-                            "platform": platform,
-                            "videos_watched": result.get("videos_watched", 0),
-                            "likes": result.get("likes", 0),
-                            "duration_min": result.get("duration_min", 0),
-                            "phase": phase.name,
-                            "new_state": new_state,
-                            "warming_day": new_day_count,
-                        })
+            events.emit(
+                "scheduler",
+                "info",
+                "warming_complete",
+                f"Warmed {platform}/{username}: {result.get('videos_watched', 0)} videos",
+                device_id=device_id,
+                account_id=account_id,
+                context={
+                    "platform": platform,
+                    "videos_watched": result.get("videos_watched", 0),
+                    "likes": result.get("likes", 0),
+                    "duration_min": result.get("duration_min", 0),
+                    "phase": phase.name,
+                    "new_state": new_state,
+                    "warming_day": new_day_count,
+                },
+            )
 
             # Distribution handoff: after 14+ warming days, unbind from device
             if new_day_count >= 14 and new_state == AccountState.ACTIVE:
@@ -1102,12 +1249,18 @@ class DeviceScheduler:
             success = True
 
         except Exception:
-            logger.error("Warming failed for %s/%s on %s",
-                        platform, username, device.name, exc_info=True)
-            events.emit("scheduler", "error", "warming_failed",
-                       f"Warming exception for {platform}/{username}",
-                       device_id=device_id, account_id=account_id,
-                       context={"platform": platform, "username": username})
+            logger.error(
+                "Warming failed for %s/%s on %s", platform, username, device.name, exc_info=True
+            )
+            events.emit(
+                "scheduler",
+                "error",
+                "warming_failed",
+                f"Warming exception for {platform}/{username}",
+                device_id=device_id,
+                account_id=account_id,
+                context={"platform": platform, "username": username},
+            )
         finally:
             self._reset_device(session)
             session.disconnect()
@@ -1129,10 +1282,14 @@ class DeviceScheduler:
         success = False
         dt.current_task = f"creating_email:{persona_name}"
 
-        events.emit("scheduler", "info", "email_creation_started",
-                    f"Creating email for persona {persona_name} on {device.name}",
-                    device_id=device_id,
-                    context={"persona_id": str(persona["id"])})
+        events.emit(
+            "scheduler",
+            "info",
+            "email_creation_started",
+            f"Creating email for persona {persona_name} on {device.name}",
+            device_id=device_id,
+            context={"persona_id": str(persona["id"])},
+        )
 
         session = WDASession(device)
         try:
@@ -1141,29 +1298,48 @@ class DeviceScheduler:
                 return False
 
             from sovi.persona.email_creator import create_email_for_persona
+
             result = create_email_for_persona(
-                session, persona, provider="outlook", device_id=device_id,
+                session,
+                persona,
+                provider="outlook",
+                device_id=device_id,
             )
 
             if result:
-                events.emit("scheduler", "info", "email_creation_complete",
-                            f"Created email for {persona_name}",
-                            device_id=device_id,
-                            context={"persona_id": str(persona["id"]),
-                                     "email_account_id": str(result["id"])})
+                events.emit(
+                    "scheduler",
+                    "info",
+                    "email_creation_complete",
+                    f"Created email for {persona_name}",
+                    device_id=device_id,
+                    context={
+                        "persona_id": str(persona["id"]),
+                        "email_account_id": str(result["id"]),
+                    },
+                )
                 success = True
             else:
-                events.emit("scheduler", "error", "email_creation_failed",
-                            f"Failed to create email for {persona_name}",
-                            device_id=device_id,
-                            context={"persona_id": str(persona["id"])})
+                events.emit(
+                    "scheduler",
+                    "error",
+                    "email_creation_failed",
+                    f"Failed to create email for {persona_name}",
+                    device_id=device_id,
+                    context={"persona_id": str(persona["id"])},
+                )
         except Exception:
-            logger.error("Email creation failed for %s on %s",
-                         persona_name, device.name, exc_info=True)
-            events.emit("scheduler", "error", "email_creation_error",
-                        f"Email creation exception for {persona_name}",
-                        device_id=device_id,
-                        context={"persona_id": str(persona["id"])})
+            logger.error(
+                "Email creation failed for %s on %s", persona_name, device.name, exc_info=True
+            )
+            events.emit(
+                "scheduler",
+                "error",
+                "email_creation_error",
+                f"Email creation exception for {persona_name}",
+                device_id=device_id,
+                context={"persona_id": str(persona["id"])},
+            )
         finally:
             self._reset_device(session)
             session.disconnect()
@@ -1186,11 +1362,14 @@ class DeviceScheduler:
         success = False
         dt.current_task = f"creating_account:{platform}/{persona_name}"
 
-        events.emit("scheduler", "info", "persona_account_creation_started",
-                    f"Creating {platform} account for {persona_name} on {device.name}",
-                    device_id=device_id,
-                    context={"persona_id": str(persona["persona_id"]),
-                             "platform": platform})
+        events.emit(
+            "scheduler",
+            "info",
+            "persona_account_creation_started",
+            f"Creating {platform} account for {persona_name} on {device.name}",
+            device_id=device_id,
+            context={"persona_id": str(persona["persona_id"]), "platform": platform},
+        )
 
         session = WDASession(device)
         try:
@@ -1204,6 +1383,7 @@ class DeviceScheduler:
                 return False
 
             from sovi.persona.account_creator import create_account_for_persona
+
             # Build persona dict with expected keys
             persona_data = {
                 "id": persona["persona_id"],
@@ -1217,26 +1397,43 @@ class DeviceScheduler:
                 "age": persona["age"],
             }
             result = create_account_for_persona(
-                session, persona_data, platform, device_id=device_id,
+                session,
+                persona_data,
+                platform,
+                device_id=device_id,
             )
 
             if result:
-                events.emit("scheduler", "info", "persona_account_created",
-                            f"Created {platform} account for {persona_name}: {result.get('username', '?')}",
-                            device_id=device_id,
-                            context={"persona_id": str(persona["persona_id"]),
-                                     "platform": platform,
-                                     "username": result.get("username")})
+                events.emit(
+                    "scheduler",
+                    "info",
+                    "persona_account_created",
+                    f"Created {platform} account for {persona_name}: {result.get('username', '?')}",
+                    device_id=device_id,
+                    context={
+                        "persona_id": str(persona["persona_id"]),
+                        "platform": platform,
+                        "username": result.get("username"),
+                    },
+                )
                 success = True
             else:
-                events.emit("scheduler", "error", "persona_account_creation_failed",
-                            f"Failed to create {platform} account for {persona_name}",
-                            device_id=device_id,
-                            context={"persona_id": str(persona["persona_id"]),
-                                     "platform": platform})
+                events.emit(
+                    "scheduler",
+                    "error",
+                    "persona_account_creation_failed",
+                    f"Failed to create {platform} account for {persona_name}",
+                    device_id=device_id,
+                    context={"persona_id": str(persona["persona_id"]), "platform": platform},
+                )
         except Exception:
-            logger.error("Persona account creation failed for %s/%s on %s",
-                         platform, persona_name, device.name, exc_info=True)
+            logger.error(
+                "Persona account creation failed for %s/%s on %s",
+                platform,
+                persona_name,
+                device.name,
+                exc_info=True,
+            )
         finally:
             self._reset_device(session)
             session.disconnect()
@@ -1256,20 +1453,28 @@ class DeviceScheduler:
         device_id = dt.device_id
         dt.current_task = f"creating:{platform}"
 
-        events.emit("scheduler", "info", "creation_started",
-                    f"Creating new {platform} account on {device.name}",
-                    device_id=device_id,
-                    context={"platform": platform})
+        events.emit(
+            "scheduler",
+            "info",
+            "creation_started",
+            f"Creating new {platform} account on {device.name}",
+            device_id=device_id,
+            context={"platform": platform},
+        )
 
         # TODO: integrate with email provider to generate disposable email
         # For now, log that creation is needed and skip
         # When implemented: after creating account, auto-bind to this device:
         #   from sovi.device.identity_guard import validate_device_account_affinity
         #   validate_device_account_affinity(device_id, new_account_id)
-        events.emit("scheduler", "warning", "creation_skipped",
-                    f"Account creation for {platform}: use persona pipeline instead",
-                    device_id=device_id,
-                    context={"platform": platform, "reason": "email_provider_not_configured"})
+        events.emit(
+            "scheduler",
+            "warning",
+            "creation_skipped",
+            f"Account creation for {platform}: use persona pipeline instead",
+            device_id=device_id,
+            context={"platform": platform, "reason": "email_provider_not_configured"},
+        )
         return None  # no-op until email provider is integrated
 
     @staticmethod
@@ -1297,18 +1502,26 @@ class DeviceScheduler:
                    WHERE id = %s""",
                 (account_id,),
             )
-            events.emit("scheduler", "info", "distribution_handoff",
-                        f"Account {platform}/{username} handed off to distribution",
-                        device_id=device_id, account_id=account_id,
-                        context={
-                            "platform": platform,
-                            "username": username,
-                        })
-            logger.info("Handed off %s/%s to distribution (unbound from %s)",
-                        platform, username, device_id[:8])
+            events.emit(
+                "scheduler",
+                "info",
+                "distribution_handoff",
+                f"Account {platform}/{username} handed off to distribution",
+                device_id=device_id,
+                account_id=account_id,
+                context={
+                    "platform": platform,
+                    "username": username,
+                },
+            )
+            logger.info(
+                "Handed off %s/%s to distribution (unbound from %s)",
+                platform,
+                username,
+                device_id[:8],
+            )
         except Exception:
-            logger.error("Distribution handoff failed for %s/%s",
-                         platform, username, exc_info=True)
+            logger.error("Distribution handoff failed for %s/%s", platform, username, exc_info=True)
 
     @staticmethod
     def _reset_device(session: WDASession) -> None:
@@ -1335,6 +1548,7 @@ class DeviceScheduler:
                 pass
             time.sleep(2)
         return None if saw_busy else False
+
 
 # ---------------------------------------------------------------------------
 # Module-level singleton for CLI/dashboard access

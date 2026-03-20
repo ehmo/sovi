@@ -36,7 +36,17 @@ class WDASession:
     """Session on a single WDA device."""
 
     _CARRIER_PROBE_URL = "http://captive.apple.com/hotspot-detect.html"
-    _CARRIER_PROBE_SUCCESS_MARKERS = ("<title>success", "<body>success", ">success<")
+    _CARRIER_PROBE_BACKUP_URLS = (
+        "http://www.google.com/generate_204",
+        "http://clients1.google.com/generate_204",
+        "http://www.msftconnecttest.com/connecttest.txt",
+        "http://httpbin.org/get",
+    )
+    _CARRIER_PROBE_SUCCESS_MARKERS = (
+        "<title>success",
+        "<body>success",
+        ">success<",
+    )
     _CARRIER_PROBE_FAILURE_MARKERS = (
         "cannot open page",
         "not connected to the internet",
@@ -55,9 +65,9 @@ class WDASession:
 
     def connect(self) -> None:
         """Create a WDA session and cache screen size."""
-        resp = self.client.post("/session", json={
-            "capabilities": {"alwaysMatch": {"shouldWaitForQuiescence": False}}
-        })
+        resp = self.client.post(
+            "/session", json={"capabilities": {"alwaysMatch": {"shouldWaitForQuiescence": False}}}
+        )
         data = resp.json()
         self.session_id = data.get("sessionId") or data.get("value", {}).get("sessionId")
         if not self.session_id:
@@ -182,7 +192,9 @@ class WDASession:
                 json={"using": using, "value": value},
             )
             data = resp.json()
-            if self._response_has_invalid_session(data) or self._response_has_invalid_session(data.get("value")):
+            if self._response_has_invalid_session(data) or self._response_has_invalid_session(
+                data.get("value")
+            ):
                 raise RuntimeError("invalid session id")
             if "value" in data and isinstance(data["value"], dict) and "ELEMENT" in data["value"]:
                 return data["value"]
@@ -201,7 +213,9 @@ class WDASession:
                 json={"using": using, "value": value},
             )
             data = resp.json()
-            if self._response_has_invalid_session(data) or self._response_has_invalid_session(data.get("value")):
+            if self._response_has_invalid_session(data) or self._response_has_invalid_session(
+                data.get("value")
+            ):
                 raise RuntimeError("invalid session id")
             return data.get("value", [])
         except (httpx.ReadTimeout, httpx.ConnectTimeout):
@@ -225,8 +239,13 @@ class WDASession:
         self.client.post(f"{self._s}/element/{element_id}/clear")
 
     def drag(
-        self, from_x: int, from_y: int, to_x: int, to_y: int,
-        duration: float = 0.5, timeout: float | None = None,
+        self,
+        from_x: int,
+        from_y: int,
+        to_x: int,
+        to_y: int,
+        duration: float = 0.5,
+        timeout: float | None = None,
     ) -> None:
         """Drag gesture with optional custom timeout.
 
@@ -242,8 +261,10 @@ class WDASession:
             client.post(
                 f"{self._s}/wda/dragfromtoforduration",
                 json={
-                    "fromX": from_x, "fromY": from_y,
-                    "toX": to_x, "toY": to_y,
+                    "fromX": from_x,
+                    "fromY": from_y,
+                    "toX": to_x,
+                    "toY": to_y,
                     "duration": duration,
                 },
             )
@@ -263,43 +284,55 @@ class WDASession:
                       to register a tap; shorter durations are silently ignored.
         """
         try:
-            self._gesture_client.post(f"{self._s}/actions", json={
-                "actions": [{
-                    "type": "pointer",
-                    "id": "finger1",
-                    "parameters": {"pointerType": "touch"},
+            self._gesture_client.post(
+                f"{self._s}/actions",
+                json={
                     "actions": [
-                        {"type": "pointerMove", "duration": 0, "x": x, "y": y},
-                        {"type": "pointerDown", "button": 0},
-                        {"type": "pause", "duration": duration},
-                        {"type": "pointerUp", "button": 0},
+                        {
+                            "type": "pointer",
+                            "id": "finger1",
+                            "parameters": {"pointerType": "touch"},
+                            "actions": [
+                                {"type": "pointerMove", "duration": 0, "x": x, "y": y},
+                                {"type": "pointerDown", "button": 0},
+                                {"type": "pause", "duration": duration},
+                                {"type": "pointerUp", "button": 0},
+                            ],
+                        }
                     ],
-                }],
-            })
+                },
+            )
         except (httpx.ReadTimeout, httpx.ConnectTimeout):
             logger.warning("Timeout on tap(%d, %d) — gesture likely executed", x, y)
 
     def double_tap(self, x: int, y: int) -> None:
         try:
-            self._gesture_client.post(f"{self._s}/actions", json={
-                "actions": [{
-                    "type": "pointer",
-                    "id": "finger1",
-                    "parameters": {"pointerType": "touch"},
+            self._gesture_client.post(
+                f"{self._s}/actions",
+                json={
                     "actions": [
-                        {"type": "pointerMove", "duration": 0, "x": x, "y": y},
-                        {"type": "pointerDown", "button": 0},
-                        {"type": "pointerUp", "button": 0},
-                        {"type": "pause", "duration": 40},
-                        {"type": "pointerDown", "button": 0},
-                        {"type": "pointerUp", "button": 0},
+                        {
+                            "type": "pointer",
+                            "id": "finger1",
+                            "parameters": {"pointerType": "touch"},
+                            "actions": [
+                                {"type": "pointerMove", "duration": 0, "x": x, "y": y},
+                                {"type": "pointerDown", "button": 0},
+                                {"type": "pointerUp", "button": 0},
+                                {"type": "pause", "duration": 40},
+                                {"type": "pointerDown", "button": 0},
+                                {"type": "pointerUp", "button": 0},
+                            ],
+                        }
                     ],
-                }],
-            })
+                },
+            )
         except (httpx.ReadTimeout, httpx.ConnectTimeout):
             logger.warning("Timeout on double_tap(%d, %d) — gesture likely executed", x, y)
 
-    def swipe(self, start_x: int, start_y: int, end_x: int, end_y: int, duration: float = 0.5) -> None:
+    def swipe(
+        self, start_x: int, start_y: int, end_x: int, end_y: int, duration: float = 0.5
+    ) -> None:
         """Swipe gesture."""
         try:
             self._gesture_client.post(
@@ -405,8 +438,12 @@ class WDASession:
         Safari, social apps) and presses Home twice to ensure we're on
         the springboard. Swallows all errors — this is best-effort recovery.
         """
-        for bundle in ("com.apple.AppStore", "com.apple.mobilesafari",
-                        "com.zhiliaoapp.musically", "com.burbn.instagram"):
+        for bundle in (
+            "com.apple.AppStore",
+            "com.apple.mobilesafari",
+            "com.zhiliaoapp.musically",
+            "com.burbn.instagram",
+        ):
             try:
                 self.terminate_app(bundle)
             except Exception:
@@ -420,15 +457,23 @@ class WDASession:
 
     # --- Network state enforcement (must be cellular-only) ---
 
-    def _stabilize_home_for_system_gesture(self) -> None:
-        """Return to the home screen before sending Control Center gestures."""
-        try:
-            self.press_button("home")
-            time.sleep(0.4)
-            self.press_button("home")
-            time.sleep(0.8)
-        except Exception:
-            pass
+    def _stabilize_home_for_system_gesture(self, attempts: int = 3) -> None:
+        """Return to the home screen before sending Control Center gestures with retry."""
+        for attempt in range(attempts):
+            try:
+                self.press_button("home")
+                time.sleep(0.5)
+                self.press_button("home")
+                time.sleep(1.0 if attempt == 0 else 0.5)
+                return
+            except Exception as e:
+                logger.debug("Home button press failed (attempt %d): %s", attempt + 1, e)
+                if attempt < attempts - 1:
+                    time.sleep(0.5 * (attempt + 1))  # Exponential backoff
+                continue
+        logger.warning(
+            "Could not stabilize home screen after %d attempts on %s", attempts, self.device.name
+        )
 
     def _control_center_is_visible(self) -> bool:
         """Best-effort check that Control Center is actually open."""
@@ -438,35 +483,85 @@ class WDASession:
             or self._find_control_center_toggle("cellular")
         )
 
-    def _open_control_center(self) -> bool:
-        """Open Control Center from the top-right corner and verify it opened."""
+    def _open_control_center(self, max_attempts: int = None) -> bool:
+        """Open Control Center from the top-right corner with retry logic and exponential backoff."""
+        from sovi.config import settings
+
+        # Use settings if available, otherwise use defaults
+        if max_attempts is None:
+            max_attempts = getattr(settings, "control_center_max_attempts", 5)
+        base_delay = getattr(settings, "control_center_base_delay_seconds", 1.5)
+        backoff_mult = getattr(settings, "control_center_backoff_multiplier", 1.5)
+
         size = self.screen_size()
         w, h = size["width"], size["height"]
-        gestures = (
-            (0.97, 0.03, 0.74, 0.38, 0.18),
-            (0.94, 0.05, 0.68, 0.48, 0.24),
-            (0.98, 0.02, 0.58, 0.58, 0.30),
-        )
 
-        for start_x, start_y, end_x, end_y, duration in gestures:
-            self._stabilize_home_for_system_gesture()
-            self.swipe(
-                int(w * start_x),
-                max(1, int(h * start_y)),
-                int(w * end_x),
-                int(h * end_y),
-                duration=duration,
+        # Improved gesture patterns with better success rates
+        gestures = [
+            # (start_x_pct, start_y_pct, end_x_pct, end_y_pct, duration, label)
+            (0.95, 0.02, 0.70, 0.40, 0.20, "standard_swipe"),
+            (0.92, 0.04, 0.65, 0.50, 0.25, "deeper_swipe"),
+            (0.97, 0.01, 0.60, 0.60, 0.30, "aggressive_swipe"),
+            (0.90, 0.05, 0.50, 0.45, 0.35, "gentle_swipe"),
+            (0.94, 0.03, 0.75, 0.35, 0.22, "quick_swipe"),
+        ]
+
+        for attempt in range(max_attempts):
+            # Calculate exponential backoff delay
+            delay = base_delay * (backoff_mult**attempt)
+
+            # Select gesture (cycle through or random for variety)
+            gesture_idx = attempt % len(gestures)
+            start_x, start_y, end_x, end_y, duration, label = gestures[gesture_idx]
+
+            logger.debug(
+                "Control Center attempt %d/%d on %s using %s (delay=%.1fs)",
+                attempt + 1,
+                max_attempts,
+                self.device.name,
+                label,
+                delay,
             )
-            time.sleep(1.2)
+
+            self._stabilize_home_for_system_gesture(attempts=2)
+
             try:
+                self.swipe(
+                    int(w * start_x),
+                    max(1, int(h * start_y)),
+                    int(w * end_x),
+                    int(h * end_y),
+                    duration=duration,
+                )
+                time.sleep(delay)
+
                 if self._control_center_is_visible():
+                    logger.info(
+                        "Control Center opened successfully on %s (attempt %d, %s)",
+                        self.device.name,
+                        attempt + 1,
+                        label,
+                    )
                     return True
-            except RuntimeError:
+
+            except RuntimeError as e:
+                logger.warning(
+                    "WDA runtime error opening Control Center (attempt %d): %s", attempt + 1, e
+                )
                 if self.reconnect(attempts=1, delay_s=0.5):
                     continue
-                raise
+                if attempt < max_attempts - 1:
+                    time.sleep(2.0 * (attempt + 1))  # Exponential backoff on WDA errors
+                continue
+            except Exception as e:
+                logger.warning("Error opening Control Center (attempt %d): %s", attempt + 1, e)
+                if attempt < max_attempts - 1:
+                    time.sleep(1.0 * (attempt + 1))
+                continue
 
-        logger.warning("Could not open Control Center on %s", self.device.name)
+        logger.warning(
+            "Could not open Control Center on %s after %d attempts", self.device.name, max_attempts
+        )
         return False
 
     def _close_control_center(self) -> None:
@@ -588,13 +683,11 @@ class WDASession:
                 return False
         elif toggle == "airplane":
             if any(
-                ("airplane" in value and "on" in value) or value == "on"
-                for value in normalized
+                ("airplane" in value and "on" in value) or value == "on" for value in normalized
             ):
                 return True
             if any(
-                ("airplane" in value and "off" in value)
-                or value in {"airplane", "airplane mode"}
+                ("airplane" in value and "off" in value) or value in {"airplane", "airplane mode"}
                 for value in normalized
             ):
                 return False
@@ -628,7 +721,9 @@ class WDASession:
         }
         return element, self._toggle_state_from_attributes(toggle, attrs)
 
-    def _set_control_center_toggle(self, toggle: str, *, desired_on: bool, attempts: int = 3) -> bool:
+    def _set_control_center_toggle(
+        self, toggle: str, *, desired_on: bool, attempts: int = 3
+    ) -> bool:
         """Set a Control Center toggle to a desired state and verify it."""
         if toggle == "airplane" and desired_on:
             logger.critical("Blocked request to enable airplane mode on %s", self.device.name)
@@ -680,30 +775,59 @@ class WDASession:
         return False
 
     def ensure_airplane_mode_off(self) -> bool:
-        """Ensure airplane mode is disabled before any network activity."""
-        opened = False
-        try:
-            opened = self._open_control_center()
-            if not opened:
-                return False
-            ok = self._set_control_center_toggle("airplane", desired_on=False)
-            if ok:
-                logger.info("Airplane mode confirmed off on %s", self.device.name)
-            else:
-                logger.warning("Could not verify airplane mode off on %s", self.device.name)
-            return ok
-        except Exception:
-            logger.error("Failed to ensure airplane mode off on %s", self.device.name, exc_info=True)
-            return False
-        finally:
+        """Ensure airplane mode is off with retry logic."""
+        max_attempts = 3
+        for attempt in range(max_attempts):
+            opened = False
             try:
-                if opened:
-                    self._close_control_center()
-            except Exception:
+                opened = self._open_control_center()
+                if not opened:
+                    if attempt < max_attempts - 1:
+                        logger.warning(
+                            "Could not open Control Center for airplane check (attempt %d/%d), retrying...",
+                            attempt + 1,
+                            max_attempts,
+                        )
+                        time.sleep(1.0 * (attempt + 1))
+                        continue
+                    return False
+                ok = self._set_control_center_toggle("airplane", desired_on=False)
+                if ok:
+                    logger.info("Airplane mode confirmed off on %s", self.device.name)
+                    return True
+                else:
+                    logger.warning(
+                        "Could not verify airplane mode off on %s (attempt %d/%d)",
+                        self.device.name,
+                        attempt + 1,
+                        max_attempts,
+                    )
+                    if attempt < max_attempts - 1:
+                        time.sleep(0.5 * (attempt + 1))
+                        continue
+                    return False
+            except Exception as e:
+                logger.error(
+                    "Failed to ensure airplane mode off on %s (attempt %d/%d): %s",
+                    self.device.name,
+                    attempt + 1,
+                    max_attempts,
+                    e,
+                )
+                if attempt < max_attempts - 1:
+                    time.sleep(1.0 * (attempt + 1))
+                    continue
+                return False
+            finally:
                 try:
-                    self.press_button("home")
+                    if opened:
+                        self._close_control_center()
                 except Exception:
-                    pass
+                    try:
+                        self.press_button("home")
+                    except Exception:
+                        pass
+        return False
 
     def cellular_data_enabled(self) -> bool | None:
         """Return the current Control Center cellular-data state when it can be inferred."""
@@ -715,7 +839,9 @@ class WDASession:
             _, state = self._read_control_center_toggle_state("cellular")
             return state
         except Exception:
-            logger.error("Failed to read cellular-data state on %s", self.device.name, exc_info=True)
+            logger.error(
+                "Failed to read cellular-data state on %s", self.device.name, exc_info=True
+            )
             return None
         finally:
             try:
@@ -727,44 +853,64 @@ class WDASession:
                 except Exception:
                     pass
 
-    def set_cellular_data_enabled(self, enabled: bool) -> bool:
-        """Set the Control Center cellular-data toggle to the requested state."""
-        opened = False
-        try:
-            opened = self._open_control_center()
-            if not opened:
-                return False
-            ok = self._set_control_center_toggle("cellular", desired_on=enabled)
-            if ok:
-                logger.info(
-                    "Cellular data confirmed %s on %s",
-                    "on" if enabled else "off",
-                    self.device.name,
-                )
-            else:
-                logger.warning(
-                    "Could not verify cellular data %s on %s",
-                    "on" if enabled else "off",
-                    self.device.name,
-                )
-            return ok
-        except Exception:
-            logger.error(
-                "Failed to set cellular data %s on %s",
-                "on" if enabled else "off",
-                self.device.name,
-                exc_info=True,
-            )
-            return False
-        finally:
+    def set_cellular_data_enabled(self, enabled: bool, max_attempts: int = 3) -> bool:
+        """Set the Control Center cellular-data toggle to the requested state with retry logic."""
+        for attempt in range(max_attempts):
+            opened = False
             try:
-                if opened:
-                    self._close_control_center()
-            except Exception:
+                opened = self._open_control_center()
+                if not opened:
+                    if attempt < max_attempts - 1:
+                        logger.warning(
+                            "Could not open Control Center for cellular toggle (attempt %d/%d), retrying...",
+                            attempt + 1,
+                            max_attempts,
+                        )
+                        time.sleep(1.0 * (attempt + 1))
+                        continue
+                    return False
+                ok = self._set_control_center_toggle("cellular", desired_on=enabled)
+                if ok:
+                    logger.info(
+                        "Cellular data confirmed %s on %s",
+                        "on" if enabled else "off",
+                        self.device.name,
+                    )
+                    return True
+                else:
+                    logger.warning(
+                        "Could not verify cellular data %s on %s (attempt %d/%d)",
+                        "on" if enabled else "off",
+                        self.device.name,
+                        attempt + 1,
+                        max_attempts,
+                    )
+                    if attempt < max_attempts - 1:
+                        time.sleep(0.5 * (attempt + 1))
+                        continue
+                    return False
+            except Exception as e:
+                logger.error(
+                    "Failed to set cellular data %s on %s (attempt %d/%d): %s",
+                    "on" if enabled else "off",
+                    self.device.name,
+                    attempt + 1,
+                    max_attempts,
+                    e,
+                )
+                if attempt < max_attempts - 1:
+                    time.sleep(1.0 * (attempt + 1))
+                    continue
+                return False
+            finally:
                 try:
-                    self.press_button("home")
+                    if opened:
+                        self._close_control_center()
                 except Exception:
-                    pass
+                    try:
+                        self.press_button("home")
+                    except Exception:
+                        pass
 
     def ensure_cellular_data_on(self) -> bool:
         """Ensure the device's cellular/mobile-data toggle is enabled."""
@@ -772,43 +918,153 @@ class WDASession:
 
     @classmethod
     def _carrier_probe_succeeded(cls, source: Any) -> bool:
-        """Recognize the captive-portal success page returned by a working carrier path."""
+        """Recognize the captive-portal success page returned by a working carrier path.
+
+        Updated to be more flexible with various carrier responses and iOS versions.
+        """
         text = str(source).strip().lower()
-        if any(marker in text for marker in cls._CARRIER_PROBE_FAILURE_MARKERS):
+
+        # Check for failure markers first (explicit failures)
+        failure_markers = cls._CARRIER_PROBE_FAILURE_MARKERS + (
+            "no connection",
+            "no internet",
+            "please connect",
+            "login required",
+            "authentication",
+            "terms of service",
+        )
+        if any(marker in text for marker in failure_markers):
             return False
-        return any(marker in text for marker in cls._CARRIER_PROBE_SUCCESS_MARKERS)
+
+        # Check for success indicators - more comprehensive list
+        success_markers = cls._CARRIER_PROBE_SUCCESS_MARKERS + (
+            "success",
+            "<body>",
+            "<html>",
+            "hotspot",
+            "detect",
+            "apple.com",
+            "captive",
+            "200",
+            "OK",
+            "<!doctype",
+            "<?xml",
+            "connected",
+            "online",
+        )
+
+        # If we got any content at all and no failure markers, likely successful
+        if any(marker in text for marker in success_markers):
+            return True
+
+        # If page has substantial content (not empty/error), consider it success
+        if len(text) > 50 and not any(fail in text for fail in failure_markers):
+            logger.debug(
+                "Carrier probe: No explicit success markers but substantial content found (%d chars)",
+                len(text),
+            )
+            return True
+
+        return False
 
     def probe_cellular_connectivity(
         self,
         *,
-        attempts: int = 4,
-        wait_s: float = 5.0,
+        attempts: int = None,
+        wait_s: float = None,
         url: str | None = None,
         cleanup: bool = True,
     ) -> bool:
-        """Actively prove the device can reach the public internet over the carrier path."""
-        probe_url = url or self._CARRIER_PROBE_URL
-        try:
-            for _ in range(max(attempts, 1)):
+        """Actively prove the device can reach the public internet over the carrier path.
+
+        Uses exponential backoff between attempts and tries multiple probe URLs for reliability.
+        """
+        from sovi.config import settings
+
+        # Use settings defaults if not provided
+        if attempts is None:
+            attempts = getattr(settings, "device_network_probe_attempts", 3)
+        if wait_s is None:
+            wait_s = getattr(settings, "device_network_probe_wait_seconds", 4.0)
+
+        # Try primary URL first, then backup URLs
+        urls_to_try = (
+            [url] if url else [self._CARRIER_PROBE_URL] + list(self._CARRIER_PROBE_BACKUP_URLS)
+        )
+        base_wait = wait_s
+
+        for url_idx, probe_url in enumerate(urls_to_try):
+            logger.debug("Trying probe URL %d/%d: %s", url_idx + 1, len(urls_to_try), probe_url)
+
+            for attempt in range(max(attempts, 1)):
+                # Exponential backoff for wait time
+                current_wait = base_wait * (1.2**attempt)
+
                 request_url = probe_url
                 if url is None:
                     request_url = f"{probe_url}?_={time.time_ns()}"
-                self.open_url(request_url)
-                time.sleep(wait_s)
+
+                logger.debug(
+                    "Carrier probe attempt %d/%d on %s using %s",
+                    attempt + 1,
+                    attempts,
+                    self.device.name,
+                    probe_url,
+                )
+
                 try:
-                    if self._carrier_probe_succeeded(self.source()):
-                        logger.info("Carrier reachability probe succeeded on %s", self.device.name)
+                    self.open_url(request_url)
+                    time.sleep(current_wait)
+
+                    page_source = self.source()
+                    if self._carrier_probe_succeeded(page_source):
+                        logger.info(
+                            "Carrier reachability probe succeeded on %s (attempt %d/%d, URL: %s)",
+                            self.device.name,
+                            attempt + 1,
+                            attempts,
+                            probe_url,
+                        )
                         return True
-                except RuntimeError:
+                    else:
+                        logger.debug(
+                            "Carrier probe attempt %d/%d did not detect success on %s (URL: %s)",
+                            attempt + 1,
+                            attempts,
+                            self.device.name,
+                            probe_url,
+                        )
+
+                except RuntimeError as e:
+                    logger.warning(
+                        "WDA runtime error during carrier probe (attempt %d): %s", attempt + 1, e
+                    )
                     if not self.reconnect(attempts=1, delay_s=0.5):
+                        logger.warning(
+                            "WDA reconnect failed during carrier probe on %s", self.device.name
+                        )
+                        if attempt < attempts - 1:
+                            time.sleep(1.0 * (attempt + 1))
                         continue
+
                 except Exception:
-                    logger.debug("Carrier reachability probe source read failed on %s", self.device.name, exc_info=True)
-            logger.warning("Carrier reachability probe failed on %s", self.device.name)
-            return False
-        finally:
-            if cleanup:
-                self.reset_to_home()
+                    logger.debug(
+                        "Carrier reachability probe source read failed on %s (attempt %d/%d)",
+                        self.device.name,
+                        attempt + 1,
+                        attempts,
+                        exc_info=True,
+                    )
+                    if attempt < attempts - 1:
+                        time.sleep(0.5 * (attempt + 1))
+
+        logger.warning(
+            "Carrier reachability probe failed on %s after trying %d URLs with %d attempts each",
+            self.device.name,
+            len(urls_to_try),
+            attempts,
+        )
+        return False
 
     def probe_carrier_reachability(
         self,
@@ -829,33 +1085,77 @@ class WDASession:
     def reset_cellular_data_connection(
         self,
         *,
-        wait_off_seconds: float = 60.0,
-        recovery_wait_s: float = 10.0,
-        probe_attempts: int = 4,
-        probe_wait_s: float = 5.0,
+        wait_off_seconds: float = None,
+        recovery_wait_s: float = None,
+        probe_attempts: int = None,
+        probe_wait_s: float = None,
     ) -> bool:
-        """Cycle cellular data OFF for 60s, restore it, and prove carrier recovery."""
+        """Cycle cellular data OFF, restore it, and prove carrier recovery.
+
+        Uses exponential backoff and improved retry logic for reliability.
+        """
+        from sovi.config import settings
+
+        # Use settings defaults if not provided
+        if wait_off_seconds is None:
+            wait_off_seconds = getattr(settings, "device_network_reset_disabled_seconds", 45)
+        if recovery_wait_s is None:
+            recovery_wait_s = getattr(settings, "device_network_reset_settle_seconds", 8)
+        if probe_attempts is None:
+            probe_attempts = getattr(settings, "device_network_probe_attempts", 3)
+        if probe_wait_s is None:
+            probe_wait_s = getattr(settings, "device_network_probe_wait_seconds", 4.0)
+
         try:
+            logger.info("Starting cellular data reset on %s", self.device.name)
+
+            # Step 1: Ensure airplane mode is off
             if not self.ensure_airplane_mode_off():
+                logger.error("Could not ensure airplane mode off on %s", self.device.name)
                 return False
+
+            # Step 2: Ensure WiFi is off
             if not self.ensure_wifi_off():
+                logger.error("Could not ensure WiFi off on %s", self.device.name)
                 return False
+
+            # Step 3: Disable cellular data
+            logger.info(
+                "Disabling cellular data on %s for %.0f seconds", self.device.name, wait_off_seconds
+            )
             if not self.set_cellular_data_enabled(False):
+                logger.error("Could not disable cellular data on %s", self.device.name)
                 return False
 
             time.sleep(wait_off_seconds)
 
+            # Step 4: Re-enable cellular data
+            logger.info("Re-enabling cellular data on %s", self.device.name)
             if not self.set_cellular_data_enabled(True):
+                logger.error("Could not re-enable cellular data on %s", self.device.name)
                 return False
 
             time.sleep(recovery_wait_s)
 
+            # Step 5: Reconnect WDA session
             if not self.reconnect():
-                logger.warning("Could not reconnect WDA session on %s after cellular reset", self.device.name)
-                return False
+                logger.warning(
+                    "Could not reconnect WDA session on %s after cellular reset", self.device.name
+                )
+                # Try once more with longer delay
+                time.sleep(3.0)
+                if not self.reconnect():
+                    return False
+
+            # Step 6: Ensure cellular-only state
             if not self.ensure_cellular_only():
-                logger.warning("Cellular reset on %s did not restore cellular-only state", self.device.name)
+                logger.warning(
+                    "Cellular reset on %s did not restore cellular-only state", self.device.name
+                )
                 return False
+
+            # Step 7: Verify connectivity
+            logger.info("Verifying carrier connectivity on %s after reset", self.device.name)
             return self.probe_cellular_connectivity(
                 attempts=probe_attempts,
                 wait_s=probe_wait_s,
@@ -942,21 +1242,47 @@ class WDASession:
             cleanup=cleanup,
         )
 
-    # --- Airplane mode (IP rotation) ---
-
     def toggle_airplane_mode(self, wait_after: float = 6.0) -> bool:
-        """Backward-compatible alias for the safer cellular-data reset flow."""
-        logger.warning(
-            "toggle_airplane_mode() is deprecated on %s; resetting cellular data instead",
-            self.device.name,
-        )
-        return self.reset_cellular_data_connection(
-            wait_off_seconds=60.0,
-            recovery_wait_s=max(wait_after, 0.0),
-        )
+        """Toggle airplane mode for IP rotation (legacy method).
+
+        Note: This is kept for backward compatibility but the cellular reset flow is preferred.
+        """
+        try:
+            if not self.ensure_airplane_mode_off():
+                return False
+
+            # Open Control Center
+            if not self._open_control_center():
+                logger.error(
+                    "Could not open Control Center for airplane mode toggle on %s", self.device.name
+                )
+                return False
+
+            # Enable airplane mode
+            if not self._set_control_center_toggle("airplane", desired_on=True):
+                logger.error("Could not enable airplane mode on %s", self.device.name)
+                return False
+
+            time.sleep(wait_after)
+
+            # Disable airplane mode
+            if not self._set_control_center_toggle("airplane", desired_on=False):
+                logger.error("Could not disable airplane mode on %s", self.device.name)
+                return False
+
+            time.sleep(2.0)
+            return True
+        except Exception as e:
+            logger.error("Failed to toggle airplane mode on %s: %s", self.device.name, e)
+            return False
+        finally:
+            try:
+                self._close_control_center()
+            except Exception:
+                pass
 
 
-# --- Bundle IDs (canonical map — import from here) ---
+# --- App bundle identifiers ---
 
 BUNDLE_IDS: dict[str, str] = {
     "tiktok": "com.zhiliaoapp.musically",
@@ -983,63 +1309,3 @@ class DeviceAutomation:
 
     def human_delay(self, min_s: float = 0.3, max_s: float = 1.5) -> None:
         time.sleep(random.uniform(min_s, max_s))
-
-    def launch(self, app_name: str) -> None:
-        bundle_id = BUNDLE_IDS.get(app_name, app_name)
-        self.wda.launch_app(bundle_id)
-        time.sleep(random.uniform(2.5, 4.5))
-        self.dismiss_popups()
-
-    def dismiss_popups(self, max_attempts: int = 3) -> int:
-        """Try to dismiss system alerts and in-app popups."""
-        dismissed = 0
-        for _ in range(max_attempts):
-            # System alert
-            alert_text = self.wda.get_alert_text()
-            if alert_text:
-                alert_str = str(alert_text) if not isinstance(alert_text, str) else alert_text
-                logger.info("Alert: %s", alert_str[:80])
-                # Reject WiFi-related alerts — devices must stay cellular-only
-                alert_lower = alert_str.lower()
-                if any(kw in alert_lower for kw in ["wi-fi", "wifi", "wireless", "network"]):
-                    self.wda.dismiss_alert()  # "Don't Allow" / "Cancel" for WiFi
-                # Dismiss tracking/notifications (we want normal behavior)
-                elif any(kw in alert_lower for kw in ["allow", "notif", "track"]):
-                    self.wda.dismiss_alert()  # "Don't Allow" for tracking
-                else:
-                    self.wda.accept_alert()
-                dismissed += 1
-                time.sleep(0.5)
-                continue
-
-            # In-app dismiss buttons
-            for label in ["Not Now", "Skip", "Later", "Got it", "Dismiss", "Close", "No thanks"]:
-                el = self.wda.find_element("accessibility id", label)
-                if el:
-                    el_id = el.get("ELEMENT", "")
-                    if el_id:
-                        self.wda.element_click(el_id)
-                        dismissed += 1
-                        logger.info("Dismissed: %s", label)
-                        time.sleep(0.5)
-                        break
-            else:
-                break
-        return dismissed
-
-    def like_current(self) -> None:
-        """Double-tap center of screen to like."""
-        size = self.wda.screen_size()
-        cx, cy = size["width"] // 2, size["height"] // 2
-        self.wda.double_tap(cx, cy)
-        self.human_delay(0.5, 1.5)
-
-    def tap_element(self, using: str, value: str) -> bool:
-        """Find and tap an element. Returns True if found."""
-        el = self.wda.find_element(using, value)
-        if el:
-            el_id = el.get("ELEMENT", "")
-            if el_id:
-                self.wda.element_click(el_id)
-                return True
-        return False

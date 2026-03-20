@@ -370,10 +370,20 @@ class TestExecuteWarmingErrorDetection:
             patch("sovi.device.scheduler.reset_idfa"),
             patch("sovi.device.scheduler.install_from_app_store", return_value=True),
             patch("sovi.device.scheduler.login_account", return_value=True),
-            patch("sovi.device.scheduler.run_warming", return_value={"error": "unsupported platform: snapchat"}),
+            patch(
+                "sovi.device.scheduler.run_warming",
+                return_value={"error": "unsupported platform: snapchat"},
+            ),
+            patch("sovi.device.scheduler.ControlCenterTransaction") as mock_txn_class,
             patch(_EVENTS_EMIT),
             patch("time.sleep"),
         ):
+            # Mock the transaction context manager
+            mock_txn = MagicMock()
+            mock_txn_class.return_value.__enter__ = MagicMock(return_value=mock_txn)
+            mock_txn_class.return_value.__exit__ = MagicMock(return_value=False)
+            mock_txn.ensure_cellular_only.return_value = True
+
             result = sched._execute_warming(device, dt, task)
 
         assert result is False
@@ -404,11 +414,21 @@ class TestExecuteWarmingErrorDetection:
             patch("sovi.device.scheduler.reset_idfa"),
             patch("sovi.device.scheduler.install_from_app_store", return_value=True),
             patch("sovi.device.scheduler.login_account", return_value=True),
-            patch("sovi.device.scheduler.run_warming", return_value={"videos_watched": 15, "likes": 3, "duration_min": 30}),
+            patch(
+                "sovi.device.scheduler.run_warming",
+                return_value={"videos_watched": 15, "likes": 3, "duration_min": 30},
+            ),
+            patch("sovi.device.scheduler.ControlCenterTransaction") as mock_txn_class,
             patch(_SYNC_EXEC) as mock_exec,
             patch(_EVENTS_EMIT),
             patch("time.sleep"),
         ):
+            # Mock the transaction context manager
+            mock_txn = MagicMock()
+            mock_txn_class.return_value.__enter__ = MagicMock(return_value=mock_txn)
+            mock_txn_class.return_value.__exit__ = MagicMock(return_value=False)
+            mock_txn.ensure_cellular_only.return_value = True
+
             result = sched._execute_warming(device, dt, task)
 
         assert result is True
@@ -476,7 +496,9 @@ class TestWarmerTaskDispatch:
             patch("sovi.device.scheduler.run_pre_session_checks", return_value=report),
             patch("sovi.device.scheduler.start_session", return_value="sess-1"),
             patch("sovi.device.scheduler.end_session") as mock_end,
-            patch.object(sched, "_execute_persona_account_creation", return_value=True) as mock_exec,
+            patch.object(
+                sched, "_execute_persona_account_creation", return_value=True
+            ) as mock_exec,
             patch.object(sched, "_wait_with_network_guard"),
             patch(_EVENTS_EMIT),
         ):
@@ -576,7 +598,9 @@ class TestNetworkGuard:
                 }
             )
         )
-        sched._runtime_conflicts = [{"pid": 999, "kind": "legacy_wrapper", "command": "/tmp/run_scheduler.py"}]
+        sched._runtime_conflicts = [
+            {"pid": 999, "kind": "legacy_wrapper", "command": "/tmp/run_scheduler.py"}
+        ]
         sched._start_error = "scheduler_lock_held"
 
         status = sched.status()
@@ -659,7 +683,10 @@ class TestNetworkGuard:
         assert healthy is False
         mock_session.reset_cellular_data_connection.assert_not_called()
         assert dt.network_guard_state == "awaiting_reset_window"
-        assert dt.network_guard_last_error == "Carrier-ready cellular verification failed; reset window is cooling down"
+        assert (
+            dt.network_guard_last_error
+            == "Carrier-ready cellular verification failed; reset window is cooling down"
+        )
         assert dt.error == "network_guard_unhealthy"
 
     def test_wait_with_network_guard_chunk_sleeps(self):
@@ -675,7 +702,11 @@ class TestNetworkGuard:
             patch.object(sched, "_run_network_guard_check", return_value=True) as mock_guard,
             patch("sovi.device.scheduler.time.monotonic", side_effect=[0.0, 0.0, 7.0, 12.0]),
             patch.object(scheduler_module.settings, "device_network_monitor_interval_seconds", 7),
-            patch.object(sched._stop_event, "wait", side_effect=lambda seconds: waits.append(seconds) or False),
+            patch.object(
+                sched._stop_event,
+                "wait",
+                side_effect=lambda seconds: waits.append(seconds) or False,
+            ),
         ):
             sched._wait_with_network_guard(device, dt, 12, task_label="idle")
 
@@ -831,10 +862,16 @@ class TestWaitForWda:
         with (
             patch.object(sched, "_wait_for_wda", return_value=True),
             patch("sovi.device.scheduler.update_heartbeat") as mock_heartbeat,
-            patch.object(sched, "_run_network_guard_check", side_effect=[False, True]) as mock_guard,
+            patch.object(
+                sched, "_run_network_guard_check", side_effect=[False, True]
+            ) as mock_guard,
             patch("sovi.device.scheduler.get_current_role", return_value="seeder"),
-            patch.object(sched, "_run_seeder_iteration", side_effect=stop_after_recovery) as mock_seeder,
-            patch.object(scheduler_module.settings, "device_network_monitor_unhealthy_wait_seconds", 15),
+            patch.object(
+                sched, "_run_seeder_iteration", side_effect=stop_after_recovery
+            ) as mock_seeder,
+            patch.object(
+                scheduler_module.settings, "device_network_monitor_unhealthy_wait_seconds", 15
+            ),
             patch.object(sched._stop_event, "wait", side_effect=record_wait),
         ):
             sched._device_loop(device_row, dt)
@@ -843,6 +880,7 @@ class TestWaitForWda:
         assert mock_guard.call_count == 2
         assert waits == [15]
         mock_seeder.assert_called_once()
+
 
 # --- Phase mapping ---
 
@@ -883,4 +921,6 @@ class TestPhaseMapping:
                 new_state = AccountState.WARMING_P3
             else:
                 new_state = AccountState.ACTIVE
-            assert new_state == expected_state, f"Day {day_count} should give {expected_state}, got {new_state}"
+            assert new_state == expected_state, (
+                f"Day {day_count} should give {expected_state}, got {new_state}"
+            )
